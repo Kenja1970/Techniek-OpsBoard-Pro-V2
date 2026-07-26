@@ -1,0 +1,24 @@
+# OS / editor
+Thumbs.db
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Node (only if a toolchain is added later)
+node_modules/
+dist/
+.cache/
+*.log
+
+# Local exports / backups
+*.local.json
+backups/
+
+# Dev-only local preview server (not part of the app)
+serve.ps1
+.claude/
+
+# Local PM Specialist proxy secrets
+server/.env.local
+.env.local

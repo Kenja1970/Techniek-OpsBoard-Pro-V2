@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Techniek OpsBoard Pro V2 - QA / QC Suite</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <style>
+      body { padding: 0; }
+      #qa-report { max-width: 1000px; margin: 0 auto; padding: 24px; }
+      .qa-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+      .qa-pill { font-weight: 800; padding: 6px 14px; border-radius: 999px; font-size: 14px; }
+      .qa-pill.pass { background: var(--ok-soft); color: var(--ok); }
+      .qa-pill.fail { background: var(--danger-soft); color: var(--danger); }
+      .qa-group { margin-top: 18px; }
+      .qa-group h3 { margin: 0 0 8px; font-size: 14px; }
+      .qa-row { display: flex; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 13px; align-items: baseline; }
+      .qa-row .ic { width: 16px; }
+      .qa-row.ok .ic { color: var(--ok); }
+      .qa-row.bad { background: var(--danger-soft); }
+      .qa-row.bad .ic { color: var(--danger); }
+      .qa-row .detail { color: var(--text-faint); margin-left: auto; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <!-- App DOM (app.js renders into this; QA drives the real code paths) -->
+    <div id="app" class="app" style="display:none">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand"><img class="brand-logo" src="../assets/techniek-logo.png" alt="Techniek Engineering" /><div class="brand-text"><strong>Techniek OpsBoard</strong><span>Control Center</span></div></div>
+        <nav class="nav" id="nav"></nav>
+        <div class="sidebar-foot">
+          <select id="boardSelect" class="select"></select>
+          <div class="hint"></div>
+        </div>
+      </aside>
+      <div class="main">
+        <header class="topbar">
+          <button class="icon-btn" id="menuToggle">☰</button>
+          <div class="search-wrap"><input id="search" class="search" /><div id="searchResults" class="search-results" hidden></div></div>
+          <div class="topbar-actions">
+            <select id="roleSelect" class="select select-sm"></select>
+            <button class="btn ghost" id="undoBtn">↶</button>
+            <button class="btn ghost" id="redoBtn">↷</button>
+            <button class="btn ghost" id="themeBtn">🌙</button>
+            <button class="btn primary" id="newCardBtn">+ New card</button>
+          </div>
+        </header>
+        <main class="view" id="view" tabindex="-1"></main>
+      </div>
+    </div>
+    <div class="modal-host" id="modalHost" hidden></div>
+    <div class="toasts" id="toasts"></div>
+
+    <div id="qa-report"><p class="muted">Running QA suite…</p></div>
+
+    <script src="../app.js"></script>
+    <script src="./qa.js"></script>
+  </body>
+</html>

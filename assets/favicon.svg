@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Techniek">
+  <rect width="64" height="64" rx="12" fill="#070e18"/>
+  <g transform="translate(32 32)">
+    <path d="M0 0 L0 -22 A22 22 0 0 1 19 -11 Z" fill="#0057d9"/>
+    <path d="M0 0 L19 -11 A22 22 0 0 1 19 11 Z" fill="#38bdf8"/>
+    <path d="M0 0 L19 11 A22 22 0 0 1 0 22 Z" fill="#2ea043"/>
+    <path d="M0 0 L0 22 A22 22 0 0 1 -19 11 Z" fill="#f2c94c"/>
+    <path d="M0 0 L-19 11 A22 22 0 0 1 -19 -11 Z" fill="#0057d9" opacity=".75"/>
+    <path d="M0 0 L-19 -11 A22 22 0 0 1 0 -22 Z" fill="#2ea043" opacity=".6"/>
+    <circle r="5" fill="#070e18"/>
+  </g>
+</svg>

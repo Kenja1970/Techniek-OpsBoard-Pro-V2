@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Techniek OpsBoard Pro V2 - local-first project delivery control center"
+    />
+    <title>Techniek OpsBoard Pro V2</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <link rel="stylesheet" href="styles.css?v=1" />
+  </head>
+  <body>
+    <noscript>This application requires JavaScript to run.</noscript>
+
+    <div id="app" class="app">
+      <!-- Sidebar -->
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <img class="brand-logo" src="assets/techniek-logo.png" alt="Techniek Engineering" />
+          <div class="brand-text">
+            <strong>Techniek OpsBoard</strong>
+            <span>Pro V2</span>
+          </div>
+        </div>
+
+        <nav class="nav" id="nav" aria-label="Primary"></nav>
+
+        <div class="sidebar-foot">
+          <label class="field-label" for="boardSelect">Active board</label>
+          <select id="boardSelect" class="select"></select>
+          <div class="hint">Local-first · data stays in this browser</div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <div class="main">
+        <header class="topbar">
+          <button class="icon-btn" id="menuToggle" title="Toggle menu" aria-label="Toggle menu">☰</button>
+          <div class="search-wrap">
+            <input
+              id="search"
+              class="search"
+              type="search"
+              placeholder="Search cards, projects, people…  (press /)"
+              autocomplete="off"
+            />
+            <div id="searchResults" class="search-results" hidden></div>
+          </div>
+          <div class="topbar-actions">
+            <label class="field-label inline" for="roleSelect">Role</label>
+            <select id="roleSelect" class="select select-sm" title="Simulated role"></select>
+            <button class="btn ghost" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+            <button class="btn ghost" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+            <button class="btn ghost" id="themeBtn" title="Toggle theme">🌙</button>
+            <button class="btn primary" id="newCardBtn" title="New card (N)">+ New card</button>
+          </div>
+        </header>
+
+        <main class="view" id="view" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <!-- Modal host -->
+    <div class="modal-host" id="modalHost" hidden></div>
+    <!-- Toasts -->
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <script src="app.js?v=1"></script>
+  </body>
+</html>

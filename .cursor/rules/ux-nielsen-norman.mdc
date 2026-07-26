@@ -1,0 +1,54 @@
+---
+description: Standing UX/UI order — every user-facing change must meet or exceed Nielsen Norman heuristics
+alwaysApply: true
+---
+
+# Standing Order: Nielsen Norman UX/UI Compliance
+
+Every interface change in this project (cards, editors, tables, modals, filters,
+forms) MUST meet or exceed the Nielsen Norman 10 usability heuristics. Treat this
+as a gate on any UI work, not an afterthought.
+
+## The 10 heuristics — how they apply here
+
+1. **Visibility of system status** — Show state without hover. Allocation %, WIP
+   status, progress, totals, and validation must be visible on the surface.
+2. **Match the real world** — Use PM/engineering language (Responsible, Reviewer,
+   Preparer, WBS, EVM), not developer jargon.
+3. **User control & freedom** — Every action is undoable (`mutate()`); modals have
+   Cancel/Esc; destructive actions confirm.
+4. **Consistency & standards** — One source of truth per concept. Never present the
+   same data in two competing controls (e.g., a separate "Assignee" dropdown AND a
+   resource table — the responsible/lead row IS the assignee).
+5. **Error prevention** — Validate before commit. Show live totals (allocation
+   should reach 100%), block illegal moves (WIP, dependency gates) with clear text.
+6. **Recognition over recall** — Searchable pickers show name + role + department +
+   avatar. Never force users to remember codes or type exact strings.
+7. **Flexibility & efficiency** — Support keyboard (`/`, `N`, arrows, Enter, Esc),
+   search, and sensible defaults; power users and novices both served.
+8. **Aesthetic & minimalist design** — Show only what's needed. Add rows on demand;
+   don't render empty placeholder rows.
+9. **Help users recognize/recover from errors** — Toasts state what failed and how
+   to fix it (e.g., "WIP limit reached… finish or pull work out first").
+10. **Help & documentation** — Inline hints under complex controls; keep the User
+    Guide (`docs/word/`, `docs/USER-GUIDE.md`) in sync with UI changes.
+
+## Concrete pattern in this codebase
+
+```js
+// ❌ BAD: hover-only info, two sources of truth, weak native datalist
+html += "<span class='avatar' title='Name - 60%'>" + initials + "</span>";
+// separate #fAssignee <select> + a 3-row datalist table
+
+// ✅ GOOD: responsible named on the card face with visible %, team as % chips;
+// one unified, searchable, validated Team & allocation editor (buildTeamEditor /
+// resourcePicker). Lead row = primary assignee. Live allocation total with status.
+```
+
+## Enforcement
+
+- Before finishing any UI change, self-review against all 10 heuristics above.
+- Prefer the existing `resourcePicker` / `buildTeamEditor` / `cardTeamHTML`
+  patterns for any people/allocation UI.
+- Add/extend QA checks in `tests/qa.js` for new UI logic; keep the suite green.
+- Cite the heuristic(s) addressed in the changelog entry.

@@ -1,0 +1,62 @@
+name: Guardrails
+
+# Optional hosted guardrails if this local-first app is mirrored to GitHub.
+# Local revision control does not depend on this workflow; see docs/REVISION-CONTROL.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node (for syntax check only — app has no build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: JavaScript syntax check
+        run: node --check app.js
+
+      - name: Required files present
+        run: |
+          set -e
+          for f in index.html styles.css app.js README.md CHANGELOG.md LICENSE .nojekyll \
+                   tests/qa.html tests/qa.js docs/qa/QA-REPORT.md; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+
+      - name: QA harness syntax check
+        run: node --check tests/qa.js
+
+      - name: HTML references versioned, relative assets
+        run: |
+          set -e
+          grep -q 'styles.css?v=' index.html || { echo "::error::index.html missing versioned styles.css"; exit 1; }
+          grep -q 'app.js?v='    index.html || { echo "::error::index.html missing versioned app.js"; exit 1; }
+          # Guard against absolute/build-only asset paths that break static hosting.
+          if grep -Eq 'src="/src/|/node_modules/' index.html; then
+            echo "::error::index.html references a build-only path"; exit 1
+          fi
+
+      - name: Version markers are consistent
+        run: |
+          set -e
+          APP_VER=$(grep -oE 'APP_VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' app.js | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          echo "App version: $APP_VER"
+          grep -q "## \[$APP_VER\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $APP_VER"; exit 1; }
+
+      - name: No leftover debug markers
+        run: |
+          if grep -RniE 'console\.(log|debug)\(|debugger;|FIXME' app.js; then
+            echo "::error::debug marker found in app.js"; exit 1
+          fi
+          echo "clean"
