@@ -299,8 +299,17 @@
     group("6 · PMI reactivity — card MOVE to Done cascades everywhere");
     Q.resetDemo();
     (function () {
-      var card = Q.state().cards.filter(function (c) { return c.projectId && c.assigneeId && !Q.isDone(c) && (c.estimateHours || 0) > (c.loggedHours || 0); })[0];
-      if (!card) { check("fixture available", false, "no movable card"); return; }
+      // Pick a card the app itself would allow to close: governance gates (WBS
+      // membership, dependencies, evidence, WIP) must not block the fixture, or
+      // we would be asserting cascade behaviour against a move that never happened.
+      var card = Q.state().cards.filter(function (c) {
+        if (!(c.projectId && c.assigneeId && !Q.isDone(c) && (c.estimateHours || 0) > (c.loggedHours || 0))) return false;
+        if ((c.progressMode || "Kanban Stage") !== "Kanban Stage") return false;
+        var b = Q.state().boards.filter(function (x) { return x.id === c.boardId; })[0];
+        if (!b) return false;
+        return !Q.cardMoveValidationMessage(c, Q.lastColumnId(b.id));
+      })[0];
+      if (!card) { check("fixture available", false, "no closable card"); return; }
       var pid = card.projectId, rid = card.assigneeId, bid = card.boardId;
       var ev0 = Q.projectEVM(pid).ev;
       var alloc0 = Q.resourceUtil(rid).allocated;
@@ -512,15 +521,19 @@
       var finish0 = card.due || card.startDate;
       var duration0 = Math.max(0, Math.round((new Date(finish0 + "T00:00:00") - new Date(start0 + "T00:00:00")) / 86400000)) + 1;
       var end0 = p.endDate;
-      Q.rescheduleCardRaw(card.id, 45);
+      // Push far enough past the project finish that the schedule envelope must
+      // expand, regardless of how much float the seeded plan happens to carry.
+      var floatDays = Math.round((new Date(end0 + "T00:00:00") - new Date(finish0 + "T00:00:00")) / 86400000);
+      var shift = Math.max(45, floatDays + 30);
+      Q.rescheduleCardRaw(card.id, shift);
       var moved = Q.state().cards.filter(function (c) { return c.id === card.id; })[0];
       var movedStart = moved.startDate || moved.due;
       var movedFinish = moved.due || moved.startDate;
       var duration1 = Math.max(0, Math.round((new Date(movedFinish + "T00:00:00") - new Date(movedStart + "T00:00:00")) / 86400000)) + 1;
       var afterProject = Q.projectEVM(p.id);
       var afterProgram = Q.programEVM();
-      check("card start shifted +45d", movedStart !== start0, movedStart + " from " + start0);
-      check("card finish shifted +45d", movedFinish !== finish0, movedFinish + " from " + finish0);
+      check("card start shifted forward", movedStart !== start0, movedStart + " from " + start0);
+      check("card finish shifted forward", movedFinish !== finish0, movedFinish + " from " + finish0);
       check("duration preserved", duration1 === duration0, "got " + duration1 + " exp " + duration0);
       check("project finish expands", p.endDate > end0, "end " + p.endDate + " from " + end0);
       check("project PV changes", !approx(afterProject.pv, beforeProject.pv, 0.1), "PV " + Math.round(beforeProject.pv) + " -> " + Math.round(afterProject.pv));

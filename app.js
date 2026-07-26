@@ -443,11 +443,23 @@
     ];
     var integrationSettings = { unanetEndpoint: "", ermasEndpoint: "", powerBiWorkspace: "", fabricErmasAccountingUrl: "", sharePointRoot: "", teamsTemplate: "", apiEndpoint: "", apiKey: "" };
 
-    // Reflect the already-approved CO-001 in the live baseline + scope so the demo
-    // is internally consistent (budget/end already include it; scope cards exist).
+    // ---- Kanban flow realism -------------------------------------------------
+    // A deliberate WIP breach (In Progress limit 4) plus two long-aged cards give
+    // the PM Advisor real flow problems to detect. Seeded directly rather than via
+    // moveCard() so the hard WIP policy does not block the setup.
+    var wipBreach = card("Engineering Delivery", "In Progress", { title: "Foundation anchor bolt re-analysis", project: "Harbor Crane Retrofit", assignee: "Sven Bakker", priority: "high", type: "Task", labels: ["Mechanical"], start: "2026-06-10", due: "2026-07-10", est: 26, logged: 18, progress: 60, age: 46 });
+    wipBreach.desc = "Pulled in before the previous item finished - stage is over its WIP limit.";
+    var aging1 = card("Engineering Delivery", "Review", { title: "Lifting lug weld procedure qualification", project: "Harbor Crane Retrofit", assignee: "Imran Haddad", priority: "medium", type: "Task", labels: ["Safety", "Documentation"], start: "2026-05-04", due: "2026-06-05", est: 20, logged: 19, progress: 80, age: 83 });
+    aging1.desc = "Sitting in Review far longer than the stage average - candidate bottleneck.";
+    var aging2 = card("Website & Digital", "QA", { title: "Cross-browser regression sweep", project: "Corporate Site Relaunch", assignee: "Diego Romero", priority: "medium", type: "Task", labels: ["Frontend"], start: "2026-05-18", due: "2026-06-12", est: 16, logged: 12, progress: 70, age: 69 });
+    aging2.desc = "Aged QA item blocking the release train.";
+    // Unestimated + unassigned work: two more things a Kanban engineer would flag.
+    card("Engineering Delivery", "Backlog", { title: "Spare parts list for handover", project: "Harbor Crane Retrofit", priority: "low", type: "Task", labels: ["Documentation"], est: 0, logged: 0, age: 12 });
+
+    // Materialize the already-approved CO-001 scope as real cards. The budget and
+    // schedule impact is applied later in tuneDemoTargets(), on top of the derived
+    // baseline, so baseline-vs-current variance stays truthful.
     var hc = pid["Harbor Crane Retrofit"];
-    hc.budget += 18000;
-    hc.endDate = "2026-08-25";
     var hcBoard = bid["Engineering Delivery"];
     var co1 = changeOrders[0];
     [["Cathodic protection design", 24], ["Install & test anodes", 16]].forEach(function (it) {
@@ -469,7 +481,85 @@
       });
     });
 
-    return {
+    // ---- WBS breakdown for the two primary delivery projects -----------------
+    // Two-level WBS so the WBS List, workspace WBS tab, and wbsGroupForCode()
+    // grouping all have real hierarchy to work with.
+    var wbsElements = [];
+    function wbs(project, code, parent, title, start, finish, pct) {
+      wbsElements.push({
+        id: uid("wbs"), projectId: pid[project].id, wbsCode: code, parentWbsCode: parent || "",
+        title: title, plannedStart: start || "", plannedFinish: finish || "",
+        percentComplete: pct || 0, sortOrder: wbsElements.length + 1,
+      });
+    }
+    wbs("Harbor Crane Retrofit", "HCR-1", "", "Project Management", "2026-04-01", "2026-08-25", 55);
+    wbs("Harbor Crane Retrofit", "HCR-1.1", "HCR-1", "Kickoff and requirements baseline", "2026-04-01", "2026-04-10", 100);
+    wbs("Harbor Crane Retrofit", "HCR-1.2", "HCR-1", "Client progress reporting", "2026-04-10", "2026-08-25", 50);
+    wbs("Harbor Crane Retrofit", "HCR-2", "", "Structural and Mechanical Design", "2026-04-13", "2026-07-24", 60);
+    wbs("Harbor Crane Retrofit", "HCR-2.1", "HCR-2", "Hydraulic actuator analysis", "2026-04-13", "2026-06-26", 55);
+    wbs("Harbor Crane Retrofit", "HCR-2.2", "HCR-2", "Corrosion protection selection", "2026-06-01", "2026-07-15", 10);
+    wbs("Harbor Crane Retrofit", "HCR-2.3", "HCR-2", "Anchor and lifting details", "2026-05-04", "2026-07-24", 65);
+    wbs("Harbor Crane Retrofit", "HCR-3", "", "Safety and Compliance", "2026-05-01", "2026-08-12", 70);
+    wbs("Harbor Crane Retrofit", "HCR-3.1", "HCR-3", "Interlock specification", "2026-05-01", "2026-06-19", 90);
+    wbs("Harbor Crane Retrofit", "HCR-4", "", "Commissioning and Turnover", "2026-07-20", "2026-08-25", 0);
+    wbs("Harbor Crane Retrofit", "HCR-4.1", "HCR-4", "Commissioning milestone", "2026-08-12", "2026-08-12", 0);
+
+    wbs("Substation Control Upgrade", "SCU-1", "", "Controls Engineering", "2026-05-12", "2026-07-20", 55);
+    wbs("Substation Control Upgrade", "SCU-1.1", "SCU-1", "PLC control loop tuning", "2026-05-12", "2026-06-22", 60);
+    wbs("Substation Control Upgrade", "SCU-1.2", "SCU-1", "Control cabinet documentation", "2026-06-01", "2026-06-28", 35);
+    wbs("Substation Control Upgrade", "SCU-2", "", "Field Installation", "2026-06-15", "2026-07-30", 20);
+    wbs("Substation Control Upgrade", "SCU-2.1", "SCU-2", "Sensor harness routing", "2026-06-20", "2026-07-04", 0);
+    wbs("Substation Control Upgrade", "SCU-3", "", "Testing and Acceptance", "2026-05-20", "2026-07-30", 80);
+    wbs("Substation Control Upgrade", "SCU-3.1", "SCU-3", "Grid interface FAT", "2026-05-20", "2026-06-05", 100);
+
+    // Point each project's cards at a WBS element so the hierarchy is populated.
+    // Once a project has a WBS, closure governance activates (cards must carry a
+    // valid WBS code, a definition of done, required evidence, and — to close —
+    // actual completion/acceptance evidence). Seed those fields so the demo is
+    // internally consistent: already-closed work is evidenced, while open work is
+    // deliberately left without completion evidence so the gate is demonstrable.
+    var closingNames = { "Done": 1, "Live": 1, "Complete": 1, "Won/Lost": 1, "Submitted": 1 };
+    var wbsByProject = {};
+    wbsElements.forEach(function (w) { (wbsByProject[w.projectId] = wbsByProject[w.projectId] || []).push(w); });
+    Object.keys(wbsByProject).forEach(function (projId) {
+      var leaves = wbsByProject[projId].filter(function (w) { return w.parentWbsCode; });
+      var pc = cards.filter(function (c) { return c.projectId === projId; });
+      pc.forEach(function (c, i) {
+        if (!leaves.length) return;
+        var leaf = leaves[i % leaves.length];
+        c.wbsCode = c.wbsCode || leaf.wbsCode;
+        c.definitionOfDone = c.definitionOfDone || "Deliverable reviewed, checked, and accepted by the responsible discipline lead.";
+        c.evidenceRequired = c.evidenceRequired || "Signed review record or client acceptance note.";
+        var b = boards.filter(function (x) { return x.id === c.boardId; })[0];
+        var colName = b ? (b.columns.filter(function (x) { return x.id === c.columnId; })[0] || {}).name : "";
+        if (closingNames[colName] && !c.completionEvidence && !c.acceptanceEvidence) {
+          c.completionEvidence = "Review record " + (c.wbsCode || c.chargeTask || "REC") + " filed in the project record.";
+        }
+      });
+    });
+
+    // ---- Risk register review discipline ------------------------------------
+    // Two risks are deliberately stale (past their review date) for the Advisor.
+    function daysAgoISO(n) { var d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
+    var riskReview = [
+      { identified: 96, reviewed: 71, due: -18 },   // stale: not reviewed in 10+ weeks
+      { identified: 74, reviewed: 12, due: 21 },
+      { identified: 52, reviewed: 9,  due: 30 },
+      { identified: 40, reviewed: 63, due: -6 },    // stale + past due
+      { identified: 33, reviewed: 5,  due: 14 },
+    ];
+    risks.forEach(function (rk, i) {
+      var t = riskReview[i % riskReview.length];
+      rk.dateIdentified = daysAgoISO(t.identified);
+      rk.lastReviewed = daysAgoISO(t.reviewed);
+      rk.dueDate = daysAgoISO(t.due);
+      if (rk.residualProbability == null) rk.residualProbability = Math.max(1, rk.probability - 1);
+      if (rk.residualImpact == null) rk.residualImpact = Math.max(1, rk.impact - 1);
+      rk.costImpact = rk.costImpact || [42000, 65000, 18000, 30000, 12000][i % 5];
+      rk.scheduleImpactDays = rk.scheduleImpactDays || [14, 21, 7, 10, 5][i % 5];
+    });
+
+    var ws = {
       version: SCHEMA_VERSION,
       savedAt: Date.now(),
       activeBoardId: boards[0].id,
@@ -494,10 +584,56 @@
       pmDeliverables: [],
       ragQueries: [],
       vectorStoreFiles: [],
-      wbsElements: [],
+      wbsElements: wbsElements,
       history: buildInitialHistory(boards, cards),
       settings: { role: "Department Manager", theme: "light", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", pmSpecialistEndpoint: PM_SPECIALIST_PROXY_DEFAULT, openAiVectorStoreId: OPENAI_VECTOR_STORE_ID },
     };
+
+    tuneDemoTargets(ws);
+    ws.history = buildInitialHistory(boards, cards);
+    return ws;
+  }
+
+  // Derive demo budgets and schedule dates from the seeded work so the portfolio
+  // demonstrates a realistic spread of A/E multipliers and EVM indices. Uses the
+  // production calculations (bound to a temporary state) rather than duplicating
+  // the math, so the demo can never drift from how the app actually computes.
+  //   multiplier = earned revenue / billable direct labor = (budget x progress) / spent
+  //   SPI        = EV / PV = progress / elapsed-schedule-fraction
+  function tuneDemoTargets(ws) {
+    var targets = {
+      "Harbor Crane Retrofit":      { mult: 3.0, spi: 0.94, days: 190 },
+      "Substation Control Upgrade": { mult: 2.4, spi: 1.06, days: 130 },
+      "Offshore Survey Bid":        { mult: 4.5, spi: 0.81, days: 95 },
+      "Manual Progress Sample":     { mult: 3.2, spi: 1.00, days: 110 },
+      "Kanban Stage Sample":        { mult: 2.7, spi: 1.11, days: 120 },
+      // Internal / overhead work carries no multiplier but still needs a credible
+      // schedule so SPI and the Gantt read sensibly.
+      "Corporate Site Relaunch":    { spi: 0.88, days: 105 },
+      "Workshop Lean Rollout":      { spi: 0.72, days: 150 },
+    };
+    var prevState = state;
+    state = ws;
+    try {
+      var today = new Date(todayISO() + "T00:00:00").getTime();
+      ws.projects.forEach(function (p) {
+        var t = targets[p.name];
+        if (!t) return;
+        var r = projectRollup(p);
+        // Applied change orders are already reflected in the seeded cards, so the
+        // TARGET multiplier must describe the post-change (current) budget. The
+        // baseline is then current minus the approved delta, which is what makes
+        // baseline-vs-current variance in Change Control truthful.
+        var co = (ws.changeOrders || []).filter(function (c) { return c.applied && c.projectId === p.id; })
+          .reduce(function (a, c) { return { budget: a.budget + (c.budgetDelta || 0), days: a.days + (c.scheduleDeltaDays || 0) }; }, { budget: 0, days: 0 });
+        if (t.mult && r.spent > 0 && r.progress > 0) p.budget = Math.round(t.mult * r.spent / (r.progress / 100));
+        var frac = clamp((r.progress / 100) / t.spi, 0.06, 0.94);
+        var startMs = today - frac * t.days * 86400000;
+        p.startDate = new Date(startMs).toISOString().slice(0, 10);
+        p.endDate = new Date(startMs + t.days * 86400000).toISOString().slice(0, 10);
+        p.baseline = { budget: p.budget - co.budget, endDate: co.days ? shiftDate(p.endDate, -co.days) : p.endDate };
+      });
+    } finally { state = prevState; }
   }
 
   function buildInitialHistory(boards, cards) {
