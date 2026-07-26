@@ -538,6 +538,28 @@
       });
     });
 
+    // ---- Anchor authored dates to today -------------------------------------
+    // The seed's date strings were authored against a fixed reference day. Shift
+    // every date by (today - reference) so the demo always shows the SAME
+    // relative picture — a handful of overdue items, near-term dues, upcoming
+    // milestones — instead of degrading into "everything is overdue" as real
+    // time moves past the authored strings.
+    var DEMO_REFERENCE_DAY = "2026-06-25";
+    var anchorDelta = Math.round((new Date(todayISO() + "T00:00:00") - new Date(DEMO_REFERENCE_DAY + "T00:00:00")) / 86400000);
+    function shiftISO(s) { return s ? shiftDate(s, anchorDelta) : s; }
+    if (anchorDelta) {
+      cards.forEach(function (c) {
+        c.startDate = shiftISO(c.startDate); c.due = shiftISO(c.due);
+        c.baselineStart = shiftISO(c.baselineStart); c.baselineFinish = shiftISO(c.baselineFinish);
+        c.ermasStart = shiftISO(c.ermasStart); c.ermasFinish = shiftISO(c.ermasFinish);
+      });
+      wbsElements.forEach(function (w) { w.plannedStart = shiftISO(w.plannedStart); w.plannedFinish = shiftISO(w.plannedFinish); });
+      changeOrders.forEach(function (co) { co.requestedDate = shiftISO(co.requestedDate); if (co.decidedDate) co.decidedDate = shiftISO(co.decidedDate); });
+      issues.forEach(function (i) { i.dueDate = shiftISO(i.dueDate); });
+      actionItems.forEach(function (a) { if (a.dueDate) a.dueDate = shiftISO(a.dueDate); });
+      resourceEngagements.forEach(function (e) { e.periodStart = shiftISO(e.periodStart); });
+    }
+
     // ---- Risk register review discipline ------------------------------------
     // Two risks are deliberately stale (past their review date) for the Advisor.
     function daysAgoISO(n) { var d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
@@ -586,7 +608,7 @@
       vectorStoreFiles: [],
       wbsElements: wbsElements,
       history: buildInitialHistory(boards, cards),
-      settings: { role: "Department Manager", theme: "light", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", pmSpecialistEndpoint: PM_SPECIALIST_PROXY_DEFAULT, openAiVectorStoreId: OPENAI_VECTOR_STORE_ID },
+      settings: { role: "Department Manager", theme: "dark", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", pmSpecialistEndpoint: PM_SPECIALIST_PROXY_DEFAULT, openAiVectorStoreId: OPENAI_VECTOR_STORE_ID },
     };
 
     tuneDemoTargets(ws);
@@ -705,7 +727,7 @@
 
   function migrate(ws) {
     if (!ws.version) ws.version = SCHEMA_VERSION;
-    if (!ws.settings) ws.settings = { role: "Department Manager", theme: "light" };
+    if (!ws.settings) ws.settings = { role: "Department Manager", theme: "dark" };
     if (ws.settings.compact == null) ws.settings.compact = false;
     if (ws.settings.targetContributionMarginPct == null) ws.settings.targetContributionMarginPct = DEFAULT_TARGET_CM_PCT;
     if (!ws.settings.apiEndpoint) ws.settings.apiEndpoint = "";
@@ -3893,7 +3915,9 @@
    * Inline SVG chart library (zero-dependency, theme-aware, print-accurate)
    * Gives report consumers an immediate visual snapshot of status.
    * ----------------------------------------------------------------------- */
-  var CHART = { brand: "#0f766e", navy: "#1e3a5f", teal: "#14b8a6", amber: "#d97706", red: "#dc2626", green: "#16a34a", blue: "#2563eb", violet: "#7c3aed", slate: "#64748b", track: "var(--surface-3)", grid: "var(--border)" };
+  // Techniek chart palette: series 1-3 are the corporate blue / green / gold,
+  // mid-tone values chosen to read on both the dark control-room and light themes.
+  var CHART = { brand: "#2f86ff", navy: "#5a7ea8", teal: "#14b8a6", amber: "#f2c94c", red: "#ef4444", green: "#2ea043", blue: "#38bdf8", violet: "#8b5cf6", slate: "#7c8ba1", track: "var(--surface-3)", grid: "var(--border)" };
   function niceMax(v) { if (!(v > 0)) return 1; var p = Math.pow(10, Math.floor(Math.log10(v))); var f = v / p; var n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10; return n * p; }
   function trimLabel(s, n) { s = String(s == null ? "" : s); n = n || 12; return s.length > n ? s.slice(0, n - 1) + "…" : s; }
   function moneyShort(v) { v = v || 0; var a = Math.abs(v); var sign = v < 0 ? "-" : ""; if (a >= 1e6) return sign + "$" + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + "M"; if (a >= 1e3) return sign + "$" + Math.round(a / 1e3) + "k"; return sign + "$" + Math.round(a); }
@@ -5157,7 +5181,7 @@
       svg += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (w - padR) + '" y2="' + gy + '" stroke="var(--border)"></line>';
       svg += '<text x="8" y="' + (gy + 4) + '" font-size="10" fill="var(--text-faint)">' + moneyShort(val) + "</text>";
     }
-    if (visible.fv) svg += '<path d="' + stepPath("fundedValue") + '" fill="none" stroke="#0f766e" stroke-width="2.5"><title>Funded Value step history</title></path>' + stepMarkers("fundedValue", "#0f766e");
+    if (visible.fv) svg += '<path d="' + stepPath("fundedValue") + '" fill="none" stroke="#2f86ff" stroke-width="2.5"><title>Funded Value step history</title></path>' + stepMarkers("fundedValue", "#2f86ff");
     if (visible.target) svg += '<path d="' + stepPath("targetCostBudget") + '" fill="none" stroke="#1d4ed8" stroke-width="2.5"><title>Target Cost Budget step history</title></path>' + stepMarkers("targetCostBudget", "#1d4ed8");
     if (visible.bill) svg += pointSeries("billEAC", "#16a34a");
     if (visible.cost) svg += pointSeries("costEAC", "#818cf8");
@@ -5195,7 +5219,7 @@
       (visible.target ? "<span><span class='tag-dot' style='background:#1d4ed8'></span> Target Cost Budget</span>" : "") +
       (visible.bill ? "<span><span class='tag-dot' style='background:#16a34a'></span> Bill EAC</span>" : "") +
       (visible.cost ? "<span><span class='tag-dot' style='background:#818cf8'></span> Cost EAC</span>" : "") +
-      (visible.fv ? "<span><span class='tag-dot' style='background:#0f766e'></span> Funded Value</span>" : "")));
+      (visible.fv ? "<span><span class='tag-dot' style='background:#2f86ff'></span> Funded Value</span>" : "")));
     return div;
   }
   function renderProjectFinancialHistory(p) {
@@ -6725,6 +6749,7 @@
         var base = FINANCIAL_ROLES.indexOf(r) !== -1 ? ["Executive", "Financial", "EVM", "P6 Source", "All"] : ["EVM", "P6 Source", "All"];
         return p && (p.evmOverride || p.financialOverride || (p.sourceSystem && p.sourceSystem !== "Local")) ? ["Schedule Controls"].concat(base) : base;
       },
+      chartPalette: function () { return CHART; },
       uid: uid,
     },
   };

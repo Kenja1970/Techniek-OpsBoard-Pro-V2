@@ -782,6 +782,25 @@
     })();
 
 
+    /* ---- 14. Techniek brand system (dark-first, corporate palette) ---- */
+    group("14 - Techniek brand system (dark-first, corporate palette)");
+    Q.resetDemo();
+    (function () {
+      var cs = getComputedStyle(document.documentElement);
+      function v(n) { return cs.getPropertyValue(n).trim().toLowerCase(); }
+      check("dark control-room tokens are the default", v("--bg") === "#070e18", "bg " + v("--bg"));
+      check("Techniek blue token present", v("--tek-blue") === "#0057d9");
+      check("Techniek green token present", v("--tek-green") === "#2ea043");
+      check("Techniek gold token present", v("--tek-gold") === "#f2c94c");
+      check("signature gradient defined", v("--tek-gradient").indexOf("linear-gradient") === 0);
+      check("6px radius system", v("--radius") === "6px", v("--radius"));
+      check("fixed-contrast avatar fill defined", v("--avatar-bg") === "#0057d9");
+      check("new demo workspaces default to dark theme", Q.state().settings.theme === "dark");
+      var pal = Q.chartPalette();
+      check("chart series 1-3 are Techniek blue/green/gold", pal.brand === "#2f86ff" && pal.green === "#2ea043" && pal.amber === "#f2c94c");
+      check("no legacy vendor teal in chart palette", JSON.stringify(pal).indexOf("#0f766e") === -1);
+    })();
+
     render();
   }
 
