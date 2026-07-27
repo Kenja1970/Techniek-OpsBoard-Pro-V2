@@ -100,7 +100,18 @@ WCAG contrast verified computationally in the live browser against the computed 
 
 ## Known limitations
 
-- The **optional** LLM layer and external-vector-store path require a live API key and a running proxy, so their network round-trip is unexercised here. Their *containment* is fully covered (group 19) using stubbed model output, and everything the app does by default is deterministic.
+- The **external-vector-store** path (legacy, optional) remains unexercised — it needs an OpenAI key and a populated store. The local knowledge base covers that need without one.
+
+### Live LLM verification — 2026-07-27
+Group 19 proves containment from stubbed output. The round-trip itself has now also been run against OpenRouter (`anthropic/claude-sonnet-5`):
+
+| Test | Result |
+|---|---|
+| Natural language the parser can't handle → action | ✅ interpreted in ~7s, ids correct, In Progress 5 → 4, WIP finding cleared, audit-trailed |
+| Model asked to close an evidence-gated card | ✅ model proposed it; **governance blocked it** — diff showed `blocked`, "Apply 1 change", card did not move |
+| Proxy with no key | ✅ reports `configured: false`, returns an actionable error, survives |
+
+The second row is the one that matters: containment was proven against a real model that genuinely attempted the forbidden action, not only against a stub.
 - The QA source-grep check is skipped when `tests/qa.html` is opened directly from `file://` (XHR is blocked); it runs when served over HTTP, and CI enforces the same rule independently.
 
 ## Result

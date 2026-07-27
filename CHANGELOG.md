@@ -26,7 +26,15 @@ The model only ever **proposes**. Survivors of sanitisation flow through the exi
 ### Quality
 QA **530/530 across 33 groups** (+28). Group 19 proves every containment guarantee from **stubbed** model output — no key, no network — including that a blocked model-proposed move leaves the card exactly where it was. The proxy was verified to boot, report honestly with no key, return an actionable error, and survive the failure.
 
-**Not yet exercised:** the live network round-trip, pending an API key. Stated here rather than implied to be tested.
+### Verified live (2026-07-27)
+The round-trip has now been exercised end to end against OpenRouter (`anthropic/claude-sonnet-5`):
+
+- A request the deterministic parser cannot handle ("the board is jammed, free up capacity in the busiest column") was interpreted into a valid, id-correct action in ~7s. **In Progress went 5 → 4, the WIP finding cleared, and the change was audit-trailed.**
+- Asked to close an evidence-gated card, the model *did* propose the move — and **governance blocked it**. The diff showed one `ok` and one `blocked`, the button read "Apply 1 change", and after applying the card had not moved.
+
+### Fixed during live verification
+- **Proxy env file was never loaded on any path containing a space.** The inherited `ROOT` resolution hand-parsed `import.meta.url` without URL-decoding, so `Techniek OpsBoard Pro V2` became `Techniek%20OpsBoard%20Pro%20V2`; the proxy then reported itself unconfigured with a valid key sitting in the file. Replaced with `fileURLToPath`. This would have failed for any user whose checkout path contains a space.
+- **`index.html` glyph corruption.** A version-bump performed with PowerShell round-tripped UTF-8 through the ANSI codepage, turning `☰ ↶ ↷ ·` into mojibake in the topbar. Restored from the last clean commit and re-bumped correctly; the whole tree was then swept for the same damage (none remaining).
 
 ## [5.0.0] — 2026-07-27
 

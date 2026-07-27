@@ -1,8 +1,14 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), ".."));
+// Use fileURLToPath rather than hand-parsing import.meta.url. The previous
+// approach never URL-decoded the pathname, so any directory containing a space
+// resolved to a literal "%20" path — the env file was then silently never
+// found and the proxy reported itself unconfigured with the key sitting right
+// there. fileURLToPath handles percent-decoding and the Windows drive prefix.
+const ROOT = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const ENV_PATH = path.join(ROOT, "server", ".env.local");
 const REGISTRY_PATH = path.join(ROOT, "server", "data", "sharepoint-procedure-registry.json");
 
