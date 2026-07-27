@@ -105,12 +105,18 @@
     { id: "changecontrol", label: "Change Control", ico: "C" },
     { id: "gantt", label: "Gantt & Critical Path", ico: "G" },
     { id: "actionitems", label: "Action Items", ico: "A" },
+    { id: "risks", label: "Risk Register", ico: "!" },
     { id: "rulescredit", label: "Rules of Credit", ico: "%" },
     { id: "pmspecialist", label: "Procedure Library", ico: "L" },
     { id: "reports", label: "Manager Report", ico: "R" },
+    { id: "client", label: "Client Report", ico: "B" },
+    { id: "audit", label: "Audit Trail", ico: "T" },
     { id: "settings", label: "Settings / Data", ico: "S" },
     { id: "help", label: "Help", ico: "?" },
   ];
+  // Note: "issues" and "decisions" are intentionally NOT in nav — they are
+  // consolidated into Action Items as typed rows (Issue / Decision), and their
+  // view functions remain only for legacy export compatibility.
 
   /* ----------------------------------------------------------------------- *
    * Small utilities
@@ -608,6 +614,7 @@
       ragQueries: [],
       vectorStoreFiles: [],
       wbsElements: wbsElements,
+      knowledgeDocs: [],
       history: buildInitialHistory(boards, cards),
       settings: { role: "Department Manager", theme: "dark", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", pmSpecialistEndpoint: PM_SPECIALIST_PROXY_DEFAULT, openAiVectorStoreId: OPENAI_VECTOR_STORE_ID },
     };
@@ -746,6 +753,7 @@
     if (ws.settings.autoProgressFromKanban == null) ws.settings.autoProgressFromKanban = true;
     if (WIP_POLICIES.indexOf(ws.settings.wipPolicy) === -1) ws.settings.wipPolicy = "hard";
     if (!ws.changeOrders) ws.changeOrders = [];
+    if (!ws.knowledgeDocs) ws.knowledgeDocs = [];   // user-uploaded procedure markdown
     if (!ws.resourceEngagements) ws.resourceEngagements = [];
     if (!ws.resourceAvailability) ws.resourceAvailability = [];
     if (!ws.imports) ws.imports = [];
@@ -2223,6 +2231,166 @@
   }
 
   /* ----------------------------------------------------------------------- *
+   * Knowledge base — local PM corpus with ranked retrieval
+   * ---------------------------------------------------------------------- *
+   * Replaces the inherited OpenAI vector-store dependency for the core value.
+   * The corpus is authored as knowledge/*.md (PMBOK-informed practice, Kanban
+   * flow, A/E financials, plus the user's own procedures), compiled to
+   * assets/knowledge-corpus.js by scripts/build-knowledge.mjs, and searched
+   * entirely in the browser. No API key, no network, works from file://.
+   *
+   * Users can also drop their own .md files in at runtime; those are stored in
+   * the workspace and ranked alongside the built-in corpus.
+   *
+   * The part that makes it actionable rather than a chatbot: every document
+   * declares a `dimension` and `triggers`, so an Advisor finding is bound to the
+   * playbook that answers it — guidance arrives attached to your live data
+   * instead of waiting to be asked for.
+   * ----------------------------------------------------------------------- */
+  var KB_STOPWORDS = { the: 1, a: 1, an: 1, and: 1, or: 1, of: 1, to: 1, in: 1, is: 1, it: 1, on: 1, for: 1, at: 1, by: 1, be: 1, as: 1, that: 1, this: 1, with: 1, are: 1, was: 1, from: 1, has: 1, have: 1, not: 1, but: 1, you: 1, your: 1, we: 1, its: 1, if: 1, so: 1, do: 1, how: 1, what: 1, why: 1, when: 1, can: 1, my: 1, i: 1 };
+  function kbTokens(s) {
+    return String(s || "").toLowerCase().replace(/[^a-z0-9%. ]+/g, " ").split(/\s+/)
+      .map(function (w) { return w.replace(/\.$/, ""); })
+      .filter(function (w) { return w && w.length > 1 && !KB_STOPWORDS[w]; });
+  }
+  // Built-in corpus (bundled) + user-uploaded procedures (workspace).
+  function kbDocuments() {
+    var built = (window.TECHNIEK_KNOWLEDGE || []).slice();
+    var user = (state.knowledgeDocs || []).slice();
+    return built.concat(user);
+  }
+  // Flatten to searchable passages, one per section.
+  function kbPassages() {
+    if (kbPassages._cache && kbPassages._n === kbDocuments().length) return kbPassages._cache;
+    var out = [];
+    kbDocuments().forEach(function (d) {
+      (d.sections || []).forEach(function (sec, i) {
+        out.push({
+          docId: d.id, title: d.title, source: d.source, dimension: d.dimension || "",
+          triggers: d.triggers || [], tags: d.tags || [], file: d.file || "",
+          heading: sec.heading || "", text: sec.text || "", index: i,
+          tokens: kbTokens((d.title || "") + " " + (sec.heading || "") + " " + (sec.text || "") + " " + (d.tags || []).join(" ")),
+        });
+      });
+    });
+    kbPassages._cache = out; kbPassages._n = kbDocuments().length;
+    return out;
+  }
+  function kbInvalidate() { kbPassages._cache = null; }
+
+  // BM25-style ranking: IDF-weighted term frequency with length normalisation.
+  // Enough to rank a few hundred passages well, with no dependency.
+  function kbSearch(query, limit) {
+    var q = kbTokens(query);
+    if (!q.length) return [];
+    var passages = kbPassages();
+    if (!passages.length) return [];
+    var N = passages.length, k1 = 1.2, b = 0.75;
+    var avgLen = passages.reduce(function (a, p) { return a + p.tokens.length; }, 0) / N;
+    var df = {};
+    q.forEach(function (term) {
+      df[term] = passages.filter(function (p) { return p.tokens.indexOf(term) !== -1; }).length;
+    });
+    var scored = passages.map(function (p) {
+      var score = 0;
+      q.forEach(function (term) {
+        var n = df[term];
+        if (!n) return;
+        var f = 0;
+        for (var i = 0; i < p.tokens.length; i++) if (p.tokens[i] === term) f++;
+        if (!f) return;
+        var idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+        score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * (p.tokens.length / avgLen)));
+      });
+      // Boost an exact phrase hit in the heading or title.
+      var ql = String(query || "").toLowerCase();
+      if (p.heading && ql.indexOf(p.heading.toLowerCase()) !== -1) score *= 1.4;
+      if (p.title && ql.indexOf(p.title.toLowerCase()) !== -1) score *= 1.3;
+      return { passage: p, score: score };
+    }).filter(function (r) { return r.score > 0; });
+    scored.sort(function (a, z) { return z.score - a.score; });
+    return scored.slice(0, limit || 6);
+  }
+
+  // Bind an Advisor finding to the playbook that answers it. Trigger phrases win;
+  // dimension is the fallback. This is what makes the corpus actionable.
+  function kbPlaybookForFinding(f) {
+    if (!f) return null;
+    var hay = String(f.title + " " + f.evidence).toLowerCase();
+    var docs = kbDocuments();
+    var byTrigger = docs.filter(function (d) {
+      return (d.triggers || []).some(function (t) { return t && hay.indexOf(t) !== -1; });
+    });
+    var pool = byTrigger.length ? byTrigger : docs.filter(function (d) { return d.dimension === f.dimension; });
+    if (!pool.length) return null;
+    // Prefer the doc whose section text best matches the finding text.
+    var best = null, bestScore = -1;
+    pool.forEach(function (d) {
+      var hits = kbSearch(f.title + " " + f.evidence, 24).filter(function (r) { return r.passage.docId === d.id; });
+      var sc = hits.length ? hits[0].score : 0;
+      if (sc > bestScore) { bestScore = sc; best = { doc: d, passage: hits.length ? hits[0].passage : (d.sections || [])[0] }; }
+    });
+    return best;
+  }
+
+  // Parse an uploaded markdown procedure (same frontmatter contract as the
+  // build script, but frontmatter is optional here).
+  function kbParseMarkdown(text, filename) {
+    var meta = {}, body = String(text || "");
+    var m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(body);
+    if (m) {
+      m[1].split(/\r?\n/).forEach(function (line) {
+        var kv = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line.trim());
+        if (kv) meta[kv[1]] = kv[2].trim();
+      });
+      body = body.slice(m[0].length);
+    }
+    var base = String(filename || "procedure.md").replace(/\.md$/i, "");
+    var sections = [];
+    body.split(/\n(?=##\s+)/).forEach(function (part) {
+      var h = /^##\s+(.+)$/m.exec(part);
+      var txt = part.replace(/^##\s+.+$/m, "").trim();
+      if (txt) sections.push({ heading: h ? h[1].trim() : "", text: txt });
+    });
+    if (!sections.length) sections = [{ heading: "", text: body.trim() }];
+    return {
+      id: meta.id || ("user-" + base.toLowerCase().replace(/[^a-z0-9]+/g, "-")),
+      title: meta.title || base,
+      source: meta.source || ("Uploaded procedure — " + base + ".md"),
+      dimension: meta.dimension || "",
+      triggers: (meta.triggers || "").split(",").map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean),
+      tags: (meta.tags || "").split(",").map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean),
+      file: base + ".md", userAdded: true, addedAt: new Date().toISOString(),
+      sections: sections,
+    };
+  }
+  function kbImportPrompt() {
+    if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
+    var input = el("input", { type: "file", accept: ".md,.markdown,.txt", multiple: "multiple" });
+    input.addEventListener("change", function () {
+      var files = Array.prototype.slice.call(input.files || []);
+      if (!files.length) return;
+      var pending = files.length, added = 0;
+      files.forEach(function (file) {
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            var doc = kbParseMarkdown(String(reader.result), file.name);
+            mutate(function () {
+              state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (d) { return d.id !== doc.id; });
+              state.knowledgeDocs.push(doc);
+            });
+            added++;
+          } catch (e) { toast("Could not parse " + file.name + ": " + e.message, "err"); }
+          if (--pending === 0) { kbInvalidate(); toast(added + " procedure file(s) added to the knowledge base", "ok"); render(); }
+        };
+        reader.readAsText(file);
+      });
+    });
+    input.click();
+  }
+
+  /* ----------------------------------------------------------------------- *
    * PM Agent — command + recommendation execution
    * ---------------------------------------------------------------------- *
    * Turns a request (typed by the user, or generated from Advisor findings)
@@ -2690,6 +2858,18 @@
       var open = el("button", { class: "btn sm af-open" }, "Open");
       open.addEventListener("click", function () { advisorDrill(f); });
       row.appendChild(open);
+      // Bind the finding to the playbook that answers it — guidance arrives
+      // attached to live data instead of waiting to be searched for.
+      var pb = kbPlaybookForFinding(f);
+      if (pb && pb.passage) {
+        var det = el("details", { class: "af-playbook" });
+        det.innerHTML = "<summary>Playbook — " + esc(pb.doc.title) + (pb.passage.heading ? " · " + esc(pb.passage.heading) : "") + "</summary>";
+        var body = el("div", { class: "af-playbook-body" });
+        appendPmFormattedText(body, pb.passage.text);
+        body.appendChild(el("div", { class: "af-playbook-src" }, esc(pb.doc.source) + (pb.doc.file ? " · " + esc(pb.doc.file) : "")));
+        det.appendChild(body);
+        row.appendChild(det);
+      }
       panel.appendChild(row);
     });
     root.appendChild(panel);
@@ -5192,11 +5372,84 @@
     ].join("\n");
   }
 
+  // Local-first procedure answers: ranked retrieval over the bundled PM corpus
+  // plus any procedures the user has added. Cited, offline, no API key.
+  function renderKnowledgeAnswer(root) {
+    var docs = kbDocuments();
+    var panel = el("div", { class: "panel panel-pad mb" });
+    panel.appendChild(el("h2", null, "Procedure Q&A"));
+    panel.appendChild(el("p", { class: "muted" },
+      "Ranked retrieval over " + docs.length + " procedure document(s) held locally — PMBOK-informed practice, Kanban flow, A/E financials, plus any procedures you add. " +
+      "Runs entirely in this browser: no API key, no network, works offline."));
+    var q = el("input", { class: "input", id: "kbQuery", placeholder: "e.g. what do I do about a WIP breach · why is contribution margin falling · when should I re-baseline" });
+    q.value = ui.kbQuery || "";
+    q.addEventListener("keydown", function (e) { if (e.key === "Enter") { ui.kbQuery = q.value; render(); } });
+    panel.appendChild(q);
+    var row = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    row.appendChild(mkBtn("Search procedures", "btn primary", function () { ui.kbQuery = $("#kbQuery").value; render(); }));
+    row.appendChild(mkBtn("Add procedure files (.md)", "btn", kbImportPrompt));
+    if ((state.knowledgeDocs || []).length) {
+      row.appendChild(mkBtn("Remove my uploads (" + state.knowledgeDocs.length + ")", "btn sm ghost", function () {
+        confirmModal("Remove uploaded procedures?", "Removes the " + state.knowledgeDocs.length + " procedure file(s) you added. The built-in corpus is unaffected.", function () {
+          mutate(function () { state.knowledgeDocs = []; }); kbInvalidate(); toast("Uploaded procedures removed", "ok");
+        });
+      }));
+    }
+    panel.appendChild(row);
+    panel.appendChild(el("div", { class: "hint mt" },
+      "Add your own by dropping Markdown in knowledge/ and running node scripts/build-knowledge.mjs, or upload .md here for drafts. See knowledge/_TEMPLATE-your-procedure.md."));
+    root.appendChild(panel);
+
+    if (ui.kbQuery) {
+      var hits = kbSearch(ui.kbQuery, 6);
+      var res = el("div", { class: "panel" });
+      res.appendChild(el("div", { class: "panel-pad" },
+        "<h2 style='margin:0'>" + hits.length + " passage(s) for &ldquo;" + esc(ui.kbQuery) + "&rdquo;</h2>" +
+        "<div class='muted'>Ranked by BM25 relevance. Every answer is a cited passage from a real document — nothing is generated.</div>"));
+      if (!hits.length) {
+        res.appendChild(el("div", { class: "empty" }, "No procedure passage matched. Try different wording, or add a procedure covering it."));
+      }
+      hits.forEach(function (h, i) {
+        var p = h.passage;
+        var item = el("div", { class: "kb-hit" });
+        item.innerHTML = "<div class='kb-hit-head'><span class='badge neutral'>" + (i + 1) + "</span>" +
+          "<strong>" + esc(p.title) + (p.heading ? " · " + esc(p.heading) : "") + "</strong>" +
+          (p.dimension ? "<span class='chip label'>" + esc(p.dimension) + "</span>" : "") + "</div>";
+        var body = el("div", { class: "kb-hit-body" });
+        appendPmFormattedText(body, p.text);
+        item.appendChild(body);
+        item.appendChild(el("div", { class: "kb-hit-src" }, esc(p.source) + (p.file ? " · " + esc(p.file) : "")));
+        res.appendChild(item);
+      });
+      root.appendChild(res);
+    }
+
+    var libr = el("div", { class: "panel mt" });
+    libr.appendChild(el("div", { class: "panel-pad" }, "<h2 style='margin:0'>Corpus</h2><div class='muted'>Documents currently searchable.</div>"));
+    var t = el("table", { class: "table table-dense" });
+    t.innerHTML = "<thead><tr><th>Document</th><th>Dimension</th><th>Source</th><th class='num'>Sections</th><th>Origin</th></tr></thead>";
+    var tb = el("tbody");
+    docs.forEach(function (d) {
+      tb.appendChild(el("tr", null, "<td><strong>" + esc(d.title) + "</strong></td><td>" + (d.dimension ? "<span class='chip label'>" + esc(d.dimension) + "</span>" : "-") +
+        "</td><td class='muted'>" + esc(d.source) + "</td><td class='num'>" + (d.sections || []).length + "</td><td>" +
+        (d.userAdded ? "<span class='badge warn'>uploaded</span>" : "<span class='badge ok'>built-in</span>") + "</td>"));
+    });
+    t.appendChild(tb); libr.appendChild(t); root.appendChild(libr);
+  }
+
   function renderPmAsk(root) {
+    renderKnowledgeAnswer(root);
+    // Optional cloud escalation. Everything above works without it.
+    var optional = el("details", { class: "panel panel-pad mt" });
+    optional.innerHTML = "<summary><strong>Optional: escalate to an external vector store</strong></summary>";
+    var wrap = el("div", { class: "mt" });
+    optional.appendChild(wrap);
+    root.appendChild(optional);
+    root = wrap;
     var grid = el("div", { class: "grid cols-2 pm-assist-grid" });
     var panel = el("div", { class: "panel panel-pad" });
-    panel.appendChild(el("h2", null, "Ask PM Specialist"));
-    panel.appendChild(el("p", { class: "muted" }, "Uses only the configured OpenAI vector store through the local proxy at " + esc(pmProxyBase()) + ". If the answer is not supported by retrieved store files, PM Specialist will say so instead of using general knowledge or local workspace data."));
+    panel.appendChild(el("h2", null, "Ask an external procedure store"));
+    panel.appendChild(el("p", { class: "muted" }, "Not required — the local corpus above answers offline. This path sends the question to an OpenAI vector store through the local proxy at " + esc(pmProxyBase()) + ", which needs a running proxy and an API key held server-side. If the answer is not supported by retrieved store files it will say so rather than using general knowledge."));
     var contextGrid = el("div", { class: "form-grid" });
     contextGrid.innerHTML = "<div class='form-row'><label class='field-label inline'>Project context</label><select class='select' id='pmAskProject'><option value=''>No specific project</option>" + state.projects.map(function (p) { return "<option value='" + p.id + "'" + (ui.pmAskProjectId === p.id ? " selected" : "") + ">" + esc(p.name) + "</option>"; }).join("") + "</select></div>" +
       "<div class='form-row'><label class='field-label inline'>Question focus</label><select class='select' id='pmAskFocus'><option value='general'>General PM support</option><option value='profitability'>More profitable</option><option value='schedule'>Improve schedule</option><option value='compliance'>More compliant</option></select></div>";
@@ -5267,7 +5520,16 @@
       var tr = el("tr");
       tr.innerHTML = "<td><strong>" + esc(vectorStoreFileName(f) || "-") + "</strong><div class='muted'>" + esc(f.attributes && (f.attributes.title || f.attributes.source) || "") + "</div></td><td><code>" + esc(f.file_id || f.id || "") + "</code></td><td><span class='badge " + (f.status === "completed" ? "ok" : f.status === "failed" ? "danger" : "warn") + "'>" + esc(f.status || "unknown") + "</span></td><td class='num'>" + esc(f.bytes || f.usage_bytes || 0) + "</td><td class='muted'>" + esc(f.purpose || "") + "</td><td class='muted'>" + esc(f.last_error ? f.last_error.message || f.last_error.code : (f.file_metadata_error || "")) + "</td><td class='right'></td>";
       var del = el("button", { class: "btn sm danger" }, "Delete");
-      del.addEventListener("click", async function () { if (!confirm("Delete vector-store file " + (f.id || f.file_id) + "?")) return; try { await pmProxyJson("/api/vector-store/files/" + encodeURIComponent(f.id || f.file_id) + "?vectorStoreId=" + encodeURIComponent(pmVectorStoreId()), { method: "DELETE" }); mutate(function () { state.vectorStoreFiles = (state.vectorStoreFiles || []).filter(function (x) { return (x.id || x.file_id) !== (f.id || f.file_id); }); }); toast("Vector store file deleted", "ok"); } catch (e) { toast(e.message, "err"); } });
+      del.addEventListener("click", function () {
+        var fid = f.id || f.file_id;
+        confirmModal("Delete vector-store file?", "Removes " + fid + " from the external vector store. This cannot be undone from here.", async function () {
+          try {
+            await pmProxyJson("/api/vector-store/files/" + encodeURIComponent(fid) + "?vectorStoreId=" + encodeURIComponent(pmVectorStoreId()), { method: "DELETE" });
+            mutate(function () { state.vectorStoreFiles = (state.vectorStoreFiles || []).filter(function (x) { return (x.id || x.file_id) !== fid; }); });
+            toast("Vector store file deleted", "ok");
+          } catch (e) { toast(e.message, "err"); }
+        });
+      });
       tr.querySelector("td.right").appendChild(del); tb.appendChild(tr);
     });
     if (!files.length) tb.appendChild(el("tr", null, "<td colspan='7' class='empty'>No vector-store files cached. Start the local proxy and refresh.</td>"));
@@ -7451,6 +7713,13 @@
       agentResolveResource: function (t) { return agentResolveResource(t); },
       progressFromEffortFor: progressFromEffort,
       undo: undo,
+      viewExists: function (id) { return typeof VIEWS[id] === "function"; },
+      viewIds: function () { return Object.keys(VIEWS); },
+      kbDocuments: kbDocuments,
+      kbSearch: function (q, n) { return kbSearch(q, n); },
+      kbPlaybookForFinding: kbPlaybookForFinding,
+      kbParseMarkdown: kbParseMarkdown,
+      kbAddDocRaw: function (md, name) { var d = kbParseMarkdown(md, name); state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (x) { return x.id !== d.id; }); state.knowledgeDocs.push(d); kbInvalidate(); save(); return d.id; },
       cardById: cardById,
       resourceById: resourceById,
       uid: uid,

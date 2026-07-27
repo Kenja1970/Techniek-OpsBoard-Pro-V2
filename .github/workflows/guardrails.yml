@@ -30,12 +30,31 @@ jobs:
         run: |
           set -e
           for f in index.html styles.css app.js README.md CHANGELOG.md LICENSE .nojekyll \
-                   tests/qa.html tests/qa.js docs/qa/QA-REPORT.md; do
+                   tests/qa.html tests/qa.js docs/qa/QA-REPORT.md \
+                   assets/knowledge-corpus.js scripts/build-knowledge.mjs \
+                   knowledge/_TEMPLATE-your-procedure.md; do
             test -f "$f" || { echo "::error::missing $f"; exit 1; }
           done
 
       - name: QA harness syntax check
         run: node --check tests/qa.js
+
+      - name: Knowledge corpus is in sync with knowledge/*.md
+        run: |
+          set -e
+          node scripts/build-knowledge.mjs
+          if ! git diff --quiet -- assets/knowledge-corpus.js; then
+            echo "::error::assets/knowledge-corpus.js is stale. Run: node scripts/build-knowledge.mjs"
+            git --no-pager diff --stat -- assets/knowledge-corpus.js
+            exit 1
+          fi
+
+      - name: No native alert()/confirm() dialogs
+        run: |
+          if grep -nE '[^a-zA-Z.](alert|confirm)[[:space:]]*\(' app.js | grep -v 'confirmModal'; then
+            echo "::error::use confirmModal()/toast() instead of native dialogs"; exit 1
+          fi
+          echo "clean"
 
       - name: HTML references versioned, relative assets
         run: |

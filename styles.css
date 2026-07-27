@@ -459,6 +459,21 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .as-reason { color: var(--text-soft); font-size: 13px; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .as-msg { color: var(--warn); font-size: 13px; margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--warn); }
 
+/* ---------- Knowledge base (Procedure Q&A + finding playbooks) ---------- */
+.kb-hit { padding: 12px 16px; border-top: 1px solid var(--border); }
+.kb-hit-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kb-hit-body { margin-top: 6px; font-size: 13px; color: var(--text-soft); }
+.kb-hit-body h3 { font-size: 13px; margin: 10px 0 4px; color: var(--text); }
+.kb-hit-body ul { margin: 4px 0 8px 18px; padding: 0; }
+.kb-hit-body p { margin: 0 0 8px; }
+.kb-hit-src { font-size: 11px; color: var(--text-faint); margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.af-playbook { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.af-playbook > summary { cursor: pointer; padding: 7px 10px; font-weight: 700; font-size: 12px; color: var(--brand-strong); }
+.af-playbook-body { padding: 4px 12px 10px; font-size: 13px; color: var(--text-soft); border-top: 1px solid var(--border); }
+.af-playbook-body h3 { font-size: 13px; margin: 10px 0 4px; color: var(--text); }
+.af-playbook-body ul { margin: 4px 0 8px 18px; padding: 0; }
+.af-playbook-src { font-size: 11px; color: var(--text-faint); margin-top: 8px; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }

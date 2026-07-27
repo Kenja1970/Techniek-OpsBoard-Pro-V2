@@ -960,6 +960,87 @@
       })());
     })();
 
+    /* ---- 17. Local knowledge base (no API key, no network) ---- */
+    group("17 - Local PM knowledge base and finding playbooks");
+    Q.resetDemo();
+    (function () {
+      var docs = Q.kbDocuments();
+      check("built-in corpus is bundled and loaded", docs.length >= 8, "docs " + docs.length);
+      check("every document declares id, title, source, sections", docs.every(function (d) { return d.id && d.title && d.source && (d.sections || []).length; }));
+      check("corpus covers every advisor dimension", ["Cost", "Schedule", "Margin", "Flow", "Risk", "Resource", "Governance"].every(function (dim) {
+        return docs.some(function (d) { return d.dimension === dim; });
+      }));
+      // Retrieval quality: the right document must win, not just any match.
+      var r1 = Q.kbSearch("what do I do about a WIP limit breach", 5);
+      check("ranked retrieval returns cited passages", r1.length > 0 && !!r1[0].passage.source);
+      check("WIP question ranks the WIP playbook first", r1[0].passage.docId === "kanban-wip-limits", "got " + (r1[0] && r1[0].passage.docId));
+      var r2 = Q.kbSearch("why is contribution margin falling below target", 5);
+      check("margin question ranks the multiplier playbook first", r2[0].passage.docId === "ae-multiplier-margin", "got " + (r2[0] && r2[0].passage.docId));
+      var r3 = Q.kbSearch("cost performance index forecast at completion", 5);
+      check("CPI question ranks the cost playbook first", r3[0].passage.docId === "evm-cost-performance", "got " + (r3[0] && r3[0].passage.docId));
+      check("nonsense query returns nothing rather than a wrong answer", Q.kbSearch("zzzz qqqq vvvv", 5).length === 0);
+      check("scores are ordered descending", (function () { var s = Q.kbSearch("risk register review", 6); for (var i = 1; i < s.length; i++) if (s[i].score > s[i - 1].score) return false; return true; })());
+
+      // The actionable part: findings bind to the playbook that answers them.
+      var F = Q.advisorFindings();
+      var wipFinding = F.filter(function (f) { return /WIP limit breached/.test(f.title); })[0];
+      check("a WIP finding exists to bind", !!wipFinding);
+      if (wipFinding) {
+        var pb = Q.kbPlaybookForFinding(wipFinding);
+        check("WIP finding binds to the WIP playbook", pb && pb.doc.id === "kanban-wip-limits", pb ? pb.doc.id : "none");
+        check("bound playbook carries real passage text", pb && pb.passage && pb.passage.text.length > 80);
+      }
+      var marginFinding = F.filter(function (f) { return f.dimension === "Margin"; })[0];
+      if (marginFinding) {
+        var pb2 = Q.kbPlaybookForFinding(marginFinding);
+        check("margin finding binds to the margin playbook", pb2 && pb2.doc.id === "ae-multiplier-margin", pb2 ? pb2.doc.id : "none");
+      } else { check("margin finding fixture (skipped)", true); }
+      check("most findings resolve to a playbook", F.filter(function (f) { return !!Q.kbPlaybookForFinding(f); }).length >= Math.ceil(F.length * 0.6), F.filter(function (f) { return !!Q.kbPlaybookForFinding(f); }).length + "/" + F.length);
+
+      // User-supplied procedures rank alongside the built-ins.
+      var before = Q.kbDocuments().length;
+      var md = "---\nid: qa-test-procedure\ntitle: QA Test Procedure\nsource: QA harness\ndimension: Governance\ntriggers: qaonlytrigger\ntags: qa\n---\n\n## Unique QA Section\n\nZorbulator calibration must be witnessed and recorded before closeout.\n";
+      Q.kbAddDocRaw(md, "qa-test.md");
+      check("uploaded markdown joins the corpus", Q.kbDocuments().length === before + 1);
+      var hit = Q.kbSearch("zorbulator calibration witnessed", 3);
+      check("uploaded procedure is retrievable by content", hit.length > 0 && hit[0].passage.docId === "qa-test-procedure", hit.length ? hit[0].passage.docId : "none");
+      check("uploaded procedure keeps its frontmatter metadata", (function () { var d = Q.kbDocuments().filter(function (x) { return x.id === "qa-test-procedure"; })[0]; return d && d.dimension === "Governance" && d.title === "QA Test Procedure"; })());
+      check("markdown without frontmatter still parses", (function () { var d = Q.kbParseMarkdown("## A heading\n\nSome body text here.", "plain-note.md"); return d.title === "plain-note" && d.sections.length >= 1; })());
+      check("knowledge base needs no API key or network", !Q.state().settings.apiKey && typeof window.TECHNIEK_KNOWLEDGE === "object");
+    })();
+
+    /* ---- 18. Navigation completeness (no orphaned views) ---- */
+    group("18 - Navigation completeness");
+    Q.resetDemo();
+    (function () {
+      var nav = Q.navIds();
+      check("Client Report is reachable from nav", nav.indexOf("client") !== -1);
+      check("Audit Trail is reachable from nav", nav.indexOf("audit") !== -1);
+      check("portfolio Risk Register is reachable from nav", nav.indexOf("risks") !== -1);
+      check("issues/decisions stay consolidated into Action Items", nav.indexOf("issues") === -1 && nav.indexOf("decisions") === -1 && nav.indexOf("actionitems") !== -1);
+      check("Procedure Library replaces the old PM Specialist label", nav.indexOf("pmspecialist") !== -1);
+      check("every nav id has a view implementation", nav.every(function (id) { return Q.viewExists(id); }),
+        nav.filter(function (id) { return !Q.viewExists(id); }).join(",") || "all present");
+      check("no view implementation is unreachable", (function () {
+        // Every VIEWS.* must be in nav, except the two deliberately consolidated.
+        var allowed = { issues: 1, decisions: 1 };
+        var orphans = Q.viewIds().filter(function (id) { return nav.indexOf(id) === -1 && !allowed[id]; });
+        return orphans.length === 0;
+      })(), Q.viewIds().filter(function (id) { return nav.indexOf(id) === -1; }).join(",") || "none");
+      // Real source check (works when served over http; skipped on file://).
+      check("no native confirm()/alert() remains in app.js", (function () {
+        try {
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", "../app.js", false);
+          xhr.send(null);
+          if (xhr.status && xhr.status >= 400) return true;
+          var src = xhr.responseText || "";
+          if (!src) return true;
+          return !/[^a-zA-Z.]confirm\s*\(/.test(src.replace(/confirmModal\s*\(/g, "")) && !/[^a-zA-Z.]alert\s*\(/.test(src);
+        } catch (e) { return true; }
+      })());
+    })();
+
     render();
   }
 
