@@ -5,6 +5,29 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.1.0] — 2026-07-27
+
+Completes the optional LLM layer. It is additive: nothing in the default product path requires it, and it is deliberately kept **outside the trust path**.
+
+### Added
+- **`POST /api/agent` on the proxy**, in two modes — `interpret` (a request becomes structured actions) and `narrate` (deterministic findings become an executive brief grounded in the supplied numbers).
+- **Provider-agnostic LLM config** — any OpenAI-compatible `/chat/completions` endpoint via `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`. Defaults to OpenRouter; the same code path serves OpenAI or a local Ollama.
+- **`agentSanitizeActions()`** — model output is treated as hostile input: op allowlist, every id must exist in state, a column must belong to the card's own board, numeric ranges clamped, unknown fields dropped, non-objects rejected. Every rejection carries a reason and is **shown to the user**, not swallowed.
+- **UI gating** — the AI buttons appear only when `/health` reports a configured model, so the default experience never advertises something that will not work. An unresolved request now offers AI interpretation instead of dead-ending.
+
+### Changed
+- Proxy CORS was hardcoded to a single origin (`127.0.0.1:8081`) and broke whenever the app moved port. It is now an env-configurable allowlist, localhost-only by default because the proxy holds an API key.
+- `.env.local.example` rewritten: removed the inherited vector-store ID and an unverifiable model string, documented all three provider options, and stated plainly that nothing in the default path needs the file.
+- The schema/app version QA assertion was too strict (exact equality). It now allows a schema to lag the app within a major — a feature release that persists no new fields should not force a schema bump — while still catching cross-major drift or a schema ahead of the app.
+
+### Guarantees (unchanged by adding AI)
+The model only ever **proposes**. Survivors of sanitisation flow through the existing `agentPlan()`, so a model-proposed move hits the identical WIP / evidence / dependency / progress-mode gates a human drag hits and still requires diff approval. Derived metrics (CPI, SPI, EAC, multiplier, contribution margin) are unwritable by construction. Change orders remain drafts; the model cannot approve anything.
+
+### Quality
+QA **530/530 across 33 groups** (+28). Group 19 proves every containment guarantee from **stubbed** model output — no key, no network — including that a blocked model-proposed move leaves the card exactly where it was. The proxy was verified to boot, report honestly with no key, return an actionable error, and survive the failure.
+
+**Not yet exercised:** the live network round-trip, pending an API key. Stated here rather than implied to be tested.
+
 ## [5.0.0] — 2026-07-27
 
 First release of **Techniek OpsBoard Pro V2**, a Techniek-branded fork and substantial extension of an inherited project-controls application. The lineage is intentional: V2 keeps the mature PMI/PMBOK engine and adds portfolio inspection, an acting agent, a local knowledge base, and a new design system.

@@ -18,7 +18,7 @@
   var PRODUCT_NAME = "Techniek OpsBoard Pro V2";
   var PRODUCT_SHORT = "OpsBoard V2";
   var SCHEMA_VERSION = "5.0.0";
-  var APP_VERSION = "5.0.0";
+  var APP_VERSION = "5.1.0";
   // Kanban WIP policy: "hard" blocks pulls that would exceed a stage limit (Anderson / LeanKanban).
   // "soft" warns only (legacy demo behavior). Production default is hard.
   var WIP_POLICIES = ["hard", "soft"];

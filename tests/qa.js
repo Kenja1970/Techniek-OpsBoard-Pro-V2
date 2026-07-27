@@ -613,7 +613,15 @@
       var s = Q.state();
       check("Techniek namespace is available", !!window.TechniekOpsBoard);
       check("no legacy vendor namespace leaks", !window.ENERCONPPM360 && !window.ENERCONOpsBoard);
-      check("schema version tracks app version (no drift)", TB.schema === TB.version, "schema " + TB.schema + " vs app " + TB.version);
+      // Schema may legitimately lag the app within a major (a feature release
+      // that adds no persisted fields should not force a schema bump). What is
+      // NOT allowed is silent drift across majors, or a schema ahead of the app
+      // — that is how the upstream 4.7.0-app / 4.2.0-schema mismatch happened.
+      check("schema version does not drift from app version", (function () {
+        var s = String(TB.schema).split(".").map(Number), a = String(TB.version).split(".").map(Number);
+        if (s[0] !== a[0]) return false;                       // majors must match
+        return s[1] < a[1] || (s[1] === a[1] && s[2] <= a[2]); // schema never ahead of app
+      })(), "schema " + TB.schema + " vs app " + TB.version);
       check("programs seeded", s.programs && s.programs.length >= 1);
       check("portfolios seeded", s.portfolios && s.portfolios.length >= 1);
       check("legacy issues retained for export compatibility", s.issues && s.issues.length >= 1);
