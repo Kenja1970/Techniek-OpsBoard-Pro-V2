@@ -1,7 +1,7 @@
 # QA / QC Report — Techniek OpsBoard Pro V2
 
 **Version:** 5.0.0 · **Schema:** 5.0.0 · **Date:** 2026-07-27
-**Result:** ✅ **502 / 502 checks passed · 0 failures · 32 groups**
+**Result:** ✅ **530 / 530 checks passed · 0 failures · 33 groups**
 **Run:** browser harness at `tests/qa.html`, verified live with zero console errors.
 
 ## Method
@@ -53,7 +53,8 @@ node scripts/build-knowledge.mjs   # corpus must be in sync with knowledge/*.md
 | **16** | **PM Agent — command mode, recommendation mode, governance** | **29** |
 | **17** | **Local PM knowledge base and finding playbooks** | **18** |
 | **18** | **Navigation completeness** | **7** |
-| | **Total** | **502** |
+| **19** | **LLM layer — untrusted model output is contained** | **28** |
+| | **Total** | **530** |
 
 Bold groups are new in V2.
 
@@ -81,6 +82,15 @@ Corpus loads and covers all seven dimensions. Retrieval quality is asserted by *
 
 Finding→playbook binding is verified, as is uploading a markdown procedure and retrieving it by content with frontmatter preserved.
 
+### LLM layer (group 19) — proven without a key
+`agentPlanFromLlmResponse(stub)` drives the entire validate→plan path from a **stubbed** model response, so every containment guarantee is proven deterministically with no key and no network.
+
+Hostile output is rejected rather than hopefully passed through: invented card ids, a column from another board, unknown resource/project ids, unsupported ops, non-object entries, and zero-day reschedules all fail with a reason — and **nothing hostile survives sanitisation**.
+
+Attempts to write derived metrics (`cpi`, `spi`, `eac`, `multiplier`) are dropped, because those are computed, not stored. Valid output is coerced instead of trusted: progress `250` clamps to `100`, allocation `400` clamps to `100`, `"HIGH"` normalises to `high`, unknown fields vanish.
+
+Then the important one: a **model-proposed move hits the same governance gate as a human drag** — an evidence-gated card is `blocked`, and calling apply leaves it where it was. Rejections are surfaced to the user, and a model that is unsure returns a `clarification` with zero actions rather than guessing.
+
 ### Brand system (14) and Navigation (18)
 Dark tokens are the default; Techniek corporate constants and the signature gradient are present; the radius system is 6px; chart series 1–3 are the corporate colors with no legacy vendor teal. Client Report, Audit Trail, and the portfolio Risk Register are reachable; Issues/Decisions stay consolidated into Action Items; no view is orphaned; no native `alert()`/`confirm()` remains in source.
 
@@ -90,12 +100,12 @@ WCAG contrast verified computationally in the live browser against the computed 
 
 ## Known limitations
 
-- The **optional** external-vector-store path is scaffolded but unexercised here; it requires a live API key and a running proxy. Everything the app does by default is deterministic and covered above.
+- The **optional** LLM layer and external-vector-store path require a live API key and a running proxy, so their network round-trip is unexercised here. Their *containment* is fully covered (group 19) using stubbed model output, and everything the app does by default is deterministic.
 - The QA source-grep check is skipped when `tests/qa.html` is opened directly from `file://` (XHR is blocked); it runs when served over HTTP, and CI enforces the same rule independently.
 
 ## Result
 
-v5.0.0 passes **502/502** with zero console errors and clean `node --check` on `app.js`, `tests/qa.js`, and the optional proxy. The suite is committed so every future change can be re-validated.
+v5.0.0 passes **530/530** with zero console errors and clean `node --check` on `app.js`, `tests/qa.js`, and the optional proxy. The suite is committed so every future change can be re-validated.
 
 ---
 

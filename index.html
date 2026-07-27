@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -9,7 +9,7 @@
     />
     <title>Techniek OpsBoard Pro V2</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
-    <link rel="stylesheet" href="styles.css?v=4" />
+    <link rel="stylesheet" href="styles.css?v=5" />
   </head>
   <body>
     <noscript>This application requires JavaScript to run.</noscript>
@@ -30,20 +30,20 @@
         <div class="sidebar-foot">
           <label class="field-label" for="boardSelect">Active board</label>
           <select id="boardSelect" class="select"></select>
-          <div class="hint">Local-first · data stays in this browser</div>
+          <div class="hint">Local-first Â· data stays in this browser</div>
         </div>
       </aside>
 
       <!-- Main -->
       <div class="main">
         <header class="topbar">
-          <button class="icon-btn" id="menuToggle" title="Toggle menu" aria-label="Toggle menu">☰</button>
+          <button class="icon-btn" id="menuToggle" title="Toggle menu" aria-label="Toggle menu">â˜°</button>
           <div class="search-wrap">
             <input
               id="search"
               class="search"
               type="search"
-              placeholder="Search cards, projects, people…  (press /)"
+              placeholder="Search cards, projects, peopleâ€¦  (press /)"
               autocomplete="off"
             />
             <div id="searchResults" class="search-results" hidden></div>
@@ -51,9 +51,9 @@
           <div class="topbar-actions">
             <label class="field-label inline" for="roleSelect">Role</label>
             <select id="roleSelect" class="select select-sm" title="Simulated role"></select>
-            <button class="btn ghost" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
-            <button class="btn ghost" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
-            <button class="btn ghost" id="themeBtn" title="Toggle theme">🌙</button>
+            <button class="btn ghost" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">â†¶</button>
+            <button class="btn ghost" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">â†·</button>
+            <button class="btn ghost" id="themeBtn" title="Toggle theme">ðŸŒ™</button>
             <button class="btn primary" id="newCardBtn" title="New card (N)">+ New card</button>
           </div>
         </header>
@@ -70,6 +70,6 @@
     <!-- Local PM knowledge corpus (generated from knowledge/*.md).
          Loaded as a script, not fetched, so the app still works from file://. -->
     <script src="assets/knowledge-corpus.js?v=1"></script>
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=5"></script>
   </body>
 </html>

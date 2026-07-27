@@ -4,7 +4,7 @@ A local-first **project delivery control center** for engineering work: Kanban e
 
 Zero dependencies, no build step, no account. Open `index.html` and it runs.
 
-![version](https://img.shields.io/badge/version-5.0.0-2f86ff) ![stack](https://img.shields.io/badge/stack-vanilla%20JS-f2c94c) ![build](https://img.shields.io/badge/build-none%20required-2ea043) ![qa](https://img.shields.io/badge/QA-502%2F502%20passing-2ea043) ![pm](https://img.shields.io/badge/PMI%2FPMBOK-EVM%20%C2%B7%20Change%20Control%20%C2%B7%20Risk-0057d9)
+![version](https://img.shields.io/badge/version-5.0.0-2f86ff) ![stack](https://img.shields.io/badge/stack-vanilla%20JS-f2c94c) ![build](https://img.shields.io/badge/build-none%20required-2ea043) ![qa](https://img.shields.io/badge/QA-530%2F530%20passing-2ea043) ![pm](https://img.shields.io/badge/PMI%2FPMBOK-EVM%20%C2%B7%20Change%20Control%20%C2%B7%20Risk-0057d9)
 
 > All seeded content is **fictional Techniek demo data**. Currency is **USD**, dates are US-formatted, and reporting follows **PMI / PMBOK** practice.
 
@@ -105,7 +105,7 @@ Financial visibility is limited to the four manager roles; master-resource admin
 
 The QA harness at [`tests/qa.html`](tests/qa.html) drives the **production** code paths through `window.TechniekOpsBoard._qa` and **independently re-derives every metric from raw data**, so a bug cannot hide behind the same bug in the test.
 
-**502 checks across 32 groups, all passing.** Report: [`docs/qa/QA-REPORT.md`](docs/qa/QA-REPORT.md).
+**530 checks across 33 groups, all passing.** Report: [`docs/qa/QA-REPORT.md`](docs/qa/QA-REPORT.md).
 
 ```bash
 node --check app.js && node --check tests/qa.js
@@ -130,7 +130,7 @@ assets/     knowledge-corpus.js       # generated PM corpus + logo/favicon
 knowledge/  *.md                      # authored knowledge (source of truth)
 scripts/    build-knowledge.mjs       # corpus compiler, QA runner, screenshots
 server/     pm-specialist-proxy.mjs   # OPTIONAL external vector-store proxy
-tests/      qa.html qa.js             # 502-check QA harness
+tests/      qa.html qa.js             # 530-check QA harness
 docs/                                 # architecture, data model, guides, QA
 ```
 

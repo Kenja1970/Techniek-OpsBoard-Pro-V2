@@ -1041,6 +1041,94 @@
       })());
     })();
 
+    /* ---- 19. Optional LLM layer: untrusted output is contained ---- */
+    group("19 - LLM layer (stubbed model output, no key required)");
+    Q.resetDemo();
+    (function () {
+      var s = Q.state();
+      var realCard = s.cards.filter(function (c) { return !Q.isDone(c) && c.projectId; })[0];
+      var realRes = s.resources.filter(function (r) { return r.status === "Active"; })[0];
+      var realProj = s.projects[0];
+      var b = s.boards.filter(function (x) { return x.id === realCard.boardId; })[0];
+      var otherCol = b.columns.filter(function (c) { return c.id !== realCard.columnId; })[0];
+
+      // Context handed to the model must carry the ids it is required to quote back.
+      var ctx = Q.agentLlmContext();
+      check("context exposes card ids", (ctx.cards || []).length > 0 && !!ctx.cards[0].cardId);
+      check("context exposes column ids for the active board", (ctx.activeBoard.columns || []).every(function (c) { return !!c.columnId; }));
+      check("context includes deterministic findings for grounding", (ctx.findings || []).length > 0);
+      check("context includes resource and project ids", (ctx.resources || []).length > 0 && (ctx.projects || []).length > 0);
+
+      // --- hallucinated / malformed output must be rejected, not applied ---
+      var hostile = Q.agentSanitizeActions([
+        { op: "move", cardId: "card_does_not_exist", columnId: otherCol.id },
+        { op: "move", cardId: realCard.id, columnId: "col_not_on_this_board" },
+        { op: "reassign", cardId: realCard.id, resourceId: "res_nope" },
+        { op: "reschedule", cardId: realCard.id, days: 0 },
+        { op: "delete_everything", cardId: realCard.id },
+        { op: "update", cardId: realCard.id, fields: { cpi: 1.5, spi: 2, eac: 0, multiplier: 9 } },
+        { op: "changeorder", projectId: "proj_nope", title: "x" },
+        "not an object",
+        null,
+      ]);
+      check("unknown card id rejected", hostile.rejected.some(function (r) { return /cardId does not exist/.test(r); }));
+      check("column from another board rejected", hostile.rejected.some(function (r) { return /columnId is not on/.test(r); }));
+      check("unknown resource id rejected", hostile.rejected.some(function (r) { return /resourceId does not exist/.test(r); }));
+      check("zero-day reschedule rejected", hostile.rejected.some(function (r) { return /non-zero integer/.test(r); }));
+      check("unsupported op rejected", hostile.rejected.some(function (r) { return /unsupported op/.test(r); }));
+      check("derived metrics cannot be written by the model", hostile.rejected.some(function (r) { return /derived metrics cannot be written/.test(r); }));
+      check("unknown project id rejected", hostile.rejected.some(function (r) { return /projectId does not exist/.test(r); }));
+      check("non-object entries rejected", hostile.rejected.some(function (r) { return /not an object/.test(r); }));
+      check("nothing hostile survives sanitisation", hostile.actions.length === 0, "survived " + hostile.actions.length);
+
+      // --- valid output is coerced, then still governed ---
+      var good = Q.agentSanitizeActions([
+        { op: "update", cardId: realCard.id, fields: { estimateHours: 21, progress: 250, priority: "HIGH", bogus: "drop me" }, reason: "test" },
+        { op: "reassign", cardId: realCard.id, resourceId: realRes.id, allocationPct: 400 },
+      ]);
+      check("valid actions survive", good.actions.length === 2);
+      check("out-of-range progress is clamped", good.actions[0].fields.progress === 100, "got " + good.actions[0].fields.progress);
+      check("enum is normalised", good.actions[0].fields.priority === "high");
+      check("unknown field is dropped silently", good.actions[0].fields.bogus === undefined);
+      check("allocation is clamped to 100", good.actions[1].allocationPct === 100);
+      check("sanitised actions are tagged as model-proposed", good.actions.every(function (a) { return a._llm === true; }));
+
+      // --- the whole response path: model JSON -> validated plan ---
+      var resp = Q.agentPlanFromLlmResponse({
+        narrative: "Two adjustments to relieve pressure.",
+        actions: [
+          { op: "update", cardId: realCard.id, fields: { estimateHours: 30 }, reason: "re-estimate" },
+          { op: "move", cardId: "ghost", columnId: otherCol.id },
+        ],
+      });
+      check("narrative is carried through", /relieve pressure/.test(resp.narrative));
+      check("hallucinated action never reaches the planner", resp.plan.length === 1);
+      check("rejection is reported to the user, not swallowed", resp.rejected.length === 1);
+      check("surviving action is planned and governed", ["ok", "blocked", "invalid"].indexOf(resp.plan[0].status) !== -1);
+
+      // --- a model-proposed move still hits the same governance gates ---
+      var governed = s.cards.filter(function (c) {
+        if (!c.projectId || Q.isDone(c)) return false;
+        var bb = s.boards.filter(function (x) { return x.id === c.boardId; })[0];
+        return bb && !!Q.cardMoveValidationMessage(c, Q.lastColumnId(bb.id));
+      })[0];
+      if (governed) {
+        var gResp = Q.agentPlanFromLlmResponse({ actions: [{ op: "move", cardId: governed.id, columnId: Q.lastColumnId(governed.boardId) }] });
+        check("model-proposed move is blocked by the same gate as a human drag", gResp.plan[0].status === "blocked", gResp.plan[0].message);
+        var beforeCol = governed.columnId;
+        Q.agentApply(gResp.plan);
+        check("blocked model action is not applied", Q.cardById(governed.id).columnId === beforeCol);
+      } else { check("governed fixture available (skipped)", true); }
+
+      // --- clarification instead of guessing ---
+      var clar = Q.agentPlanFromLlmResponse({ clarification: "Which of the three review items did you mean?", actions: [] });
+      check("clarification is surfaced with no actions", /Which of the three/.test(clar.clarification) && clar.plan.length === 0);
+
+      // --- malformed top-level response degrades safely ---
+      check("non-JSON / empty response yields an empty plan", Q.agentPlanFromLlmResponse(null).plan.length === 0);
+      check("response with no actions array yields an empty plan", Q.agentPlanFromLlmResponse({ narrative: "hi" }).plan.length === 0);
+    })();
+
     render();
   }
 

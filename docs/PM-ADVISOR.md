@@ -120,6 +120,53 @@ TechniekOpsBoard._qa.agentPlan(actions)         // validated plan with statuses
 TechniekOpsBoard._qa.agentApply(plan)           // { applied, skipped }
 ```
 
-## Where the optional LLM fits
+## The optional LLM layer
 
-Nothing above requires one. An LLM layer can add two things: interpreting phrasing outside the built-in command patterns, and narrating findings in prose. It is deliberately **not** in the trust path — it would propose actions that still pass through `agentPlan()` and the same governance, and it cannot approve anything.
+Nothing above requires it. When configured, it adds two things: **interpreting phrasing outside the built-in command patterns**, and **narrating findings** in prose grounded in the deterministic evidence.
+
+It is deliberately **outside the trust path**.
+
+```
+user text ──► /api/agent (proxy holds the key) ──► model
+                                                    │  JSON
+                                                    ▼
+                                       agentSanitizeActions()   ← treats output as hostile
+                                       op allowlist · id must exist
+                                       ranges clamped · unknown fields dropped
+                                                    │
+                                                    ▼
+                                             agentPlan()         ← the SAME governance
+                                       WIP · evidence · dependency · progress-mode
+                                                    │
+                                                    ▼
+                                          diff preview ─► you approve ─► apply
+```
+
+**What the model cannot do**, enforced in code rather than by prompt:
+
+| | |
+|---|---|
+| Invent an id | rejected — `cardId does not exist` |
+| Reference a column from another board | rejected |
+| Write CPI / SPI / EAC / multiplier / CM | dropped — derived metrics are unwritable |
+| Emit an unsupported op | rejected |
+| Exceed a range (progress 250, allocation 400) | clamped to 100 |
+| Bypass a WIP limit or evidence gate | blocked, identically to a human drag |
+| Approve a change order | impossible — drafts only |
+| Apply anything | impossible — you approve the diff |
+
+Rejections are **shown to you**, not swallowed. If the model is unsure it is instructed to return `clarification` and zero actions rather than guess, and that question is surfaced.
+
+### Configuration
+
+Copy `server/.env.local.example` to `server/.env.local` and set `LLM_API_KEY` + `LLM_MODEL`. The endpoint is any OpenAI-compatible `/chat/completions` gateway — OpenRouter by default, or point `LLM_BASE_URL` at OpenAI or a local Ollama. **The key stays server-side; the browser never receives it.** Then:
+
+```bash
+node server/pm-specialist-proxy.mjs
+```
+
+The UI only offers the AI buttons when `/health` reports a configured model, so the default experience never advertises something that will not work.
+
+### Testing without a key
+
+`agentPlanFromLlmResponse(stub)` drives the entire validate→plan path from a stubbed model response, which is how QA group 19 proves every containment guarantee above with no key and no network.

@@ -2630,6 +2630,136 @@
     });
   }
 
+  /* ---- Optional LLM layer -------------------------------------------------
+   * Interprets phrasing the deterministic parser does not cover, and narrates
+   * Advisor findings. It is deliberately OUTSIDE the trust path:
+   *   - the model only ever PROPOSES; agentPlan() still validates every action
+   *     against the same governance a human drag hits
+   *   - its output is treated as untrusted input and hard-validated below
+   *     (op allowlist, id existence, type/range coercion, unknown fields
+   *     dropped) before it is allowed near the planner
+   *   - it cannot approve anything
+   * With no proxy configured, everything above still works.
+   * ----------------------------------------------------------------------- */
+  var AGENT_ALLOWED_OPS = { move: 1, update: 1, reassign: 1, reschedule: 1, create: 1, changeorder: 1 };
+  var AGENT_ALLOWED_FIELDS = { estimateHours: "num", loggedHours: "num", progress: "num", priority: "enum", due: "date", startDate: "date", title: "text" };
+
+  // Compact, id-bearing snapshot. Ids are what the model must quote back, so
+  // they are the point of this payload; free text is trimmed to keep it small.
+  function agentLlmContext() {
+    var b = activeBoard();
+    var cards = boardCards(b.id).filter(function (c) { return !isDone(c); }).slice(0, 120).map(function (c) {
+      return { cardId: c.id, title: c.title, stage: columnName(c), stageId: c.columnId,
+        projectId: c.projectId || null, assigneeId: c.assigneeId || null,
+        estimateHours: c.estimateHours || 0, loggedHours: c.loggedHours || 0,
+        progress: c.progress || 0, priority: c.priority, due: c.due || null, wbs: cardWbsCode(c) };
+    });
+    return {
+      activeBoard: { boardId: b.id, name: b.name, columns: (b.columns || []).map(function (c) { return { columnId: c.id, name: c.name, wip: c.wip || 0 }; }) },
+      projects: state.projects.map(function (p) { return { projectId: p.id, name: p.name, code: p.unanetProjectCode, status: p.status }; }),
+      resources: state.resources.filter(function (r) { return r.status === "Active"; }).map(function (r) { return { resourceId: r.id, name: r.name, role: r.role, type: r.type, utilizationPct: Math.round(resourceUtil(r).util) }; }),
+      cards: cards,
+      findings: advisorFindings().map(function (f) { return { severity: f.severity, dimension: f.dimension, title: f.title, evidence: f.evidence, action: f.action }; }),
+      health: advisorHealth(),
+      policy: {
+        wipPolicy: (state.settings || {}).wipPolicy || "hard",
+        targetContributionMarginPct: state.settings.targetContributionMarginPct != null ? state.settings.targetContributionMarginPct : DEFAULT_TARGET_CM_PCT,
+      },
+    };
+  }
+
+  // Treat model output as hostile input. Anything that does not survive this is
+  // dropped with a reason the user can see — never passed through hopefully.
+  function agentSanitizeActions(raw) {
+    var out = [], rejected = [];
+    (Array.isArray(raw) ? raw : []).slice(0, 40).forEach(function (a, i) {
+      function reject(why) { rejected.push("action " + (i + 1) + " (" + (a && a.op ? String(a.op).slice(0, 20) : "no op") + "): " + why); }
+      if (!a || typeof a !== "object") return reject("not an object");
+      var op = String(a.op || "").toLowerCase();
+      if (!AGENT_ALLOWED_OPS[op]) return reject("unsupported op");
+      var clean = { op: op, reason: typeof a.reason === "string" ? a.reason.slice(0, 300) : "Proposed by the AI layer", _llm: true };
+
+      if (op === "move") {
+        if (!cardById(a.cardId)) return reject("cardId does not exist");
+        var card = cardById(a.cardId);
+        var brd = state.boards.filter(function (x) { return x.id === card.boardId; })[0];
+        if (!brd || !(brd.columns || []).some(function (c) { return c.id === a.columnId; })) return reject("columnId is not on that card's board");
+        clean.cardId = a.cardId; clean.columnId = a.columnId;
+      } else if (op === "update") {
+        if (!cardById(a.cardId)) return reject("cardId does not exist");
+        var f = a.fields && typeof a.fields === "object" ? a.fields : {};
+        var fields = {};
+        Object.keys(f).forEach(function (k) {
+          var kind = AGENT_ALLOWED_FIELDS[k];
+          if (!kind) return;                       // silently drop unknown/derived fields
+          var v = f[k];
+          if (kind === "num") { var n = parseFloat(v); if (isFinite(n) && n >= 0) fields[k] = k === "progress" ? clamp(Math.round(n), 0, 100) : n; }
+          else if (kind === "enum") { if (PRIORITIES.indexOf(String(v).toLowerCase()) !== -1) fields[k] = String(v).toLowerCase(); }
+          else if (kind === "date") { if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) fields[k] = String(v); }
+          else if (kind === "text") { if (String(v).trim()) fields[k] = String(v).trim().slice(0, 200); }
+        });
+        if (!Object.keys(fields).length) return reject("no valid editable fields (derived metrics cannot be written)");
+        clean.cardId = a.cardId; clean.fields = fields;
+      } else if (op === "reassign") {
+        if (!cardById(a.cardId)) return reject("cardId does not exist");
+        if (!resourceById(a.resourceId)) return reject("resourceId does not exist");
+        clean.cardId = a.cardId; clean.resourceId = a.resourceId;
+        clean.allocationPct = clamp(parseInt(a.allocationPct, 10) || 100, 0, 100);
+      } else if (op === "reschedule") {
+        if (!cardById(a.cardId)) return reject("cardId does not exist");
+        var d = parseInt(a.days, 10);
+        if (!isFinite(d) || d === 0) return reject("days must be a non-zero integer");
+        clean.cardId = a.cardId; clean.days = clamp(d, -365, 365);
+      } else if (op === "create") {
+        if (!a.title || !String(a.title).trim()) return reject("a new card needs a title");
+        clean.title = String(a.title).trim().slice(0, 200);
+        if (a.boardId && state.boards.some(function (x) { return x.id === a.boardId; })) clean.boardId = a.boardId;
+        if (a.columnId) clean.columnId = a.columnId;
+        if (a.projectId && projectById(a.projectId)) clean.projectId = a.projectId;
+        var est = parseFloat(a.estimateHours); if (isFinite(est) && est >= 0) clean.estimateHours = est;
+      } else if (op === "changeorder") {
+        if (!projectById(a.projectId)) return reject("projectId does not exist");
+        clean.projectId = a.projectId;
+        clean.title = String(a.title || "Agent-drafted change").slice(0, 200);
+        clean.budgetDelta = isFinite(parseFloat(a.budgetDelta)) ? parseFloat(a.budgetDelta) : 0;
+        clean.scheduleDeltaDays = isFinite(parseInt(a.scheduleDeltaDays, 10)) ? parseInt(a.scheduleDeltaDays, 10) : 0;
+        if (CO_CATEGORIES.indexOf(a.category) !== -1) clean.category = a.category;
+      }
+      out.push(clean);
+    });
+    return { actions: out, rejected: rejected };
+  }
+
+  function agentProxyBase() { return String(state.settings.pmSpecialistEndpoint || PM_SPECIALIST_PROXY_DEFAULT).replace(/\/+$/, ""); }
+  async function agentLlmHealth() {
+    try {
+      var res = await fetch(agentProxyBase() + "/health");
+      if (!res.ok) return { configured: false };
+      var data = await res.json();
+      return (data && data.agent) || { configured: false };
+    } catch (e) { return { configured: false, error: e.message }; }
+  }
+  async function agentLlmCall(mode, question) {
+    var res = await fetch(agentProxyBase() + "/api/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode, question: question, context: agentLlmContext() }),
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Agent proxy error");
+    return data;
+  }
+  // Exposed so QA can drive the full validate→plan path with a stubbed model
+  // response, proving the guarantees without a key or a network call.
+  function agentPlanFromLlmResponse(data) {
+    var san = agentSanitizeActions(data && data.actions);
+    return {
+      narrative: (data && typeof data.narrative === "string") ? data.narrative : "",
+      clarification: (data && typeof data.clarification === "string") ? data.clarification : "",
+      rejected: san.rejected,
+      plan: agentPlan(san.actions),
+    };
+  }
+
   /* ---- Apply (single undo step, audit-trailed as agent-attributed) -------- */
   function agentApply(plan) {
     if (!canEdit()) { toast("Viewer role is read-only", "err"); return { applied: 0, skipped: 0 }; }
@@ -2748,8 +2878,31 @@
     host.appendChild(foot);
   }
 
+  function runAgentLlm(mode, question) {
+    if (!question) { toast("Type a request first", "err"); return; }
+    ui.agentBusy = true; ui.agentUnmatched = ""; render();
+    agentLlmCall(mode, question).then(function (data) {
+      var res = agentPlanFromLlmResponse(data);
+      ui.agentNarrative = res.narrative;
+      ui.agentClarification = res.clarification;
+      ui.agentRejected = res.rejected;
+      ui.agentPlan = res.plan;
+      ui.agentSource = "AI-interpreted · model " + (data.model || "unknown") + " · every action re-validated locally";
+      if (!data.ok) toast("Model did not return valid JSON — nothing proposed", "err");
+    }).catch(function (e) {
+      ui.agentNarrative = ""; ui.agentPlan = null;
+      toast("AI layer unavailable: " + e.message, "err");
+    }).then(function () { ui.agentBusy = false; render(); });
+  }
+
   function renderAgentConsole(root) {
-    var proxyOn = !!(ui.agentProxyOk);
+    // Probe the optional proxy once per session; the UI only offers the AI
+    // buttons when it reports a configured model.
+    if (ui.agentLlm === undefined) {
+      ui.agentLlm = { configured: false, probing: true };
+      agentLlmHealth().then(function (h) { ui.agentLlm = h || { configured: false }; render(); });
+    }
+    var proxyOn = !!(ui.agentLlm && ui.agentLlm.configured);
     var intro = el("div", { class: "panel panel-pad mb" });
     intro.innerHTML =
       "<h2 style='margin:0 0 6px'>Ask &amp; Act</h2>" +
@@ -2792,16 +2945,50 @@
       render();
     });
     row.appendChild(runBtn); row.appendChild(recBtn);
+
+    // Optional AI layer. Hidden unless a proxy reports it configured, so the
+    // default experience never advertises something that will not work.
+    if (ui.agentLlm && ui.agentLlm.configured) {
+      var aiBtn = el("button", { class: "btn" }, "Interpret with AI");
+      aiBtn.addEventListener("click", function () { runAgentLlm("interpret", $("#agentInput").value.trim()); });
+      var narrBtn = el("button", { class: "btn ghost" }, "Narrate findings");
+      narrBtn.addEventListener("click", function () { runAgentLlm("narrate", "Brief me on this portfolio."); });
+      row.appendChild(aiBtn); row.appendChild(narrBtn);
+    }
     ask.appendChild(row);
     ask.appendChild(el("div", { class: "hint mt" },
-      "Understood without any AI service: move · set estimate/logged hours/progress/priority/due · log N hours on · assign X to Y at N% · push/pull by N days · rebalance WIP."));
+      "Understood without any AI service: move · set estimate/logged hours/progress/priority/due · log N hours on · assign X to Y at N% · push/pull by N days · rebalance WIP." +
+      (proxyOn ? " Anything else can be sent to the AI layer, which proposes actions that are re-validated here before you see them." : "")));
     root.appendChild(ask);
+
+    if (ui.agentBusy) {
+      root.appendChild(el("div", { class: "panel mb" },
+        "<div class='pm-working'><div class='pm-working-head'><strong>Interpreting your request</strong><span>The model proposes; this app validates every action locally before anything can be applied.</span></div><div class='pm-progress'><span></span></div></div>"));
+    }
+
+    if (ui.agentNarrative) {
+      var nb = el("div", { class: "panel panel-pad mb" });
+      nb.innerHTML = "<div class='pm-eyebrow' style='color:var(--text-faint)'>AI narrative — grounded in the deterministic findings above</div>";
+      var nbody = el("div", { class: "kb-hit-body" });
+      appendPmFormattedText(nbody, ui.agentNarrative);
+      nb.appendChild(nbody);
+      root.appendChild(nb);
+    }
+    if (ui.agentClarification) {
+      root.appendChild(el("div", { class: "panel panel-pad mb warn-banner" },
+        "The AI layer asked instead of guessing: " + esc(ui.agentClarification)));
+    }
+    if (ui.agentRejected && ui.agentRejected.length) {
+      root.appendChild(el("div", { class: "panel panel-pad mb warn-banner" },
+        "<strong>" + ui.agentRejected.length + " proposed action(s) rejected before planning</strong><div class='mt'>" +
+        ui.agentRejected.map(function (r) { return "· " + esc(r); }).join("<br>") + "</div>"));
+    }
 
     if (ui.agentUnmatched) {
       var un = el("div", { class: "panel panel-pad mb warn-banner" },
         "The agent could not resolve \"" + esc(ui.agentUnmatched) + "\" into concrete actions offline. " +
-        (proxyOn ? "Try rephrasing with an explicit card name and target." :
-          "Natural-language intent beyond the built-in patterns needs the PM Specialist proxy running (Settings / Data). The built-in command patterns above always work offline."));
+        (proxyOn ? "Press <strong>Interpret with AI</strong> to let the model resolve the intent — its proposal is still validated here before you can apply it." :
+          "Natural-language intent beyond the built-in patterns needs the optional AI proxy (see server/.env.local.example). The built-in command patterns above always work offline."));
       root.appendChild(un);
     }
 
@@ -7711,6 +7898,9 @@
       agentRebalanceActions: agentRebalanceActions,
       agentResolveCard: function (t) { return agentResolveCard(t); },
       agentResolveResource: function (t) { return agentResolveResource(t); },
+      agentSanitizeActions: agentSanitizeActions,
+      agentPlanFromLlmResponse: agentPlanFromLlmResponse,
+      agentLlmContext: agentLlmContext,
       progressFromEffortFor: progressFromEffort,
       undo: undo,
       viewExists: function (id) { return typeof VIEWS[id] === "function"; },
