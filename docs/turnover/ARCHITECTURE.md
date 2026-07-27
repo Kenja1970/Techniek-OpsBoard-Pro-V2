@@ -20,10 +20,12 @@
 |---|---|
 | `index.html` | Static shell: sidebar, topbar, `#view` container, modal/toast hosts. Loads assets with `?v=` cache-busting query strings. |
 | `styles.css` | All styling; light/dark theme via `data-theme` attribute. |
-| `app.js` | The entire application (~6,100 lines, one IIFE). See §3. |
-| `assets/utbea2601-import.js` | `window.Techniek_UTBEA2601_IMPORT_DATA` — UTBEA2601 workbook extract (task rows, rules of credit, deliverables, action items, EV schedule, risk plan, contract funding). |
-| `assets/utbea2601-resources.js` | `window.Techniek_UTBEA2601_RESOURCE_CSV` — 662-row resource/assignment-matrix catalog CSV. |
-| `server/pm-specialist-proxy.mjs` | Local OpenAI proxy: vector-store file CRUD, file-search Q&A, SharePoint procedure registry. |
+| `app.js` | The entire application (one IIFE). See §3. |
+| `knowledge/*.md` | Authored PM knowledge corpus — **source of truth**. See `docs/KNOWLEDGE-BASE.md`. |
+| `assets/knowledge-corpus.js` | `window.TECHNIEK_KNOWLEDGE` — generated from `knowledge/*.md` by `scripts/build-knowledge.mjs`. A script bundle rather than a runtime `fetch()` because `fetch` is blocked on `file://`. CI fails if it is stale. |
+| `assets/techniek-logo.png`, `assets/favicon.svg` | Brand marks. |
+| `scripts/build-knowledge.mjs` | Corpus compiler (markdown + frontmatter → bundle). |
+| `server/pm-specialist-proxy.mjs` | **Optional** local OpenAI proxy: vector-store file CRUD, file-search Q&A, SharePoint procedure registry. Nothing in the default product path requires it. |
 | `server/.env.local(.example)` | Proxy secrets: `OPENAI_API_KEY`, `OPENAI_VECTOR_STORE_ID`, `OPENAI_PM_MODEL`, `PM_PROXY_PORT`. Never committed. |
 | `server/data/sharepoint-procedure-registry.json` | Procedure revision metadata store (until Microsoft Graph auth is approved). |
 | `tests/qa.html`, `tests/qa.js` | Browser QA suite (see §6). |
@@ -41,8 +43,10 @@ The file is a single IIFE organized in banner-commented sections, in order:
 | Demo workspace | `demoWorkspace()` — the entire fictional seed dataset; `buildInitialHistory` |
 | State management | `state`, `undoStack`/`redoStack`, `load`/`save`, `migrate` (schema upgrades — every new field gets a default here), `mutate`/`commit` (undo-aware mutation wrapper) |
 | Accounts / auth gate | Local profiles, optional passphrase (salted hash), session unlock, `enterApp` boot sequence |
-| UTBEA2601 module | `ensureUTBEA2601ScheduleNativeOnLoad`, `ensureUTBEA2601ResourceCatalogOnLoad`, `applyUTBEA2601P6Controls` (P6 schedule-cost sync — the single source of truth for that project's dates/progress/financial overrides), `applyUTBEA2601ResourceAssignments` (named staffing), `importUTBEA2601Project` |
-| Permission helpers | `role()`, `canEdit`, `canFinance`, `canManageResources` |
+| Permission helpers | `role()`, `canEdit`, `canFinance`, `canManageResources`, `canAdminResources` |
+| Knowledge base | `kbDocuments`, `kbPassages`, `kbSearch` (BM25), `kbPlaybookForFinding` (binds a finding to its playbook), `kbParseMarkdown`, `kbImportPrompt` |
+| PM Advisor | `advisorFindings()` (flow / cost / schedule / margin / risk / resource / governance detectors), `advisorHealth()` (A–F per dimension), `advisorDrill()` |
+| PM Agent | `agentResolveCard/Resource/Project/Column` (fuzzy), `agentParseCommand` (deterministic NL → actions), `agentRebalanceActions`, `agentActionsFromFindings`, `agentPlan` (validate + resolve), `agentApply` (single-`mutate` batch) |
 | Card/financial calc | `cardAssignments` (max 3, persisted), blended rates, `cardCost/Budget/Consumed/Remaining`, EVM (`projectEVM`, `programEVM`), multiplier/contribution-margin math, critical path, variance flags |
 | Views | One `renderX()` per nav id: dashboard, workspace (tabbed), wbslist, board (Kanban + DnD), resources, projects, changecontrol, gantt, actionitems, rulescredit, pmspecialist, reports, settings, help |
 | Editors/modals | `openCardEditor`, project/risk/issue/decision/CO/action-item/rule editors, confirm modals |
@@ -61,43 +65,57 @@ The file is a single IIFE organized in banner-commented sections, in order:
 
 ### Boot sequence (`enterApp`)
 
-1. `load(userId)` → parse localStorage → `migrate()` (defaults + normalizers +
-   sample-project/UTBEA sync).
-2. `ensureUTBEA2601ScheduleNativeOnLoad()` — creates or re-syncs the UTBEA2601
-   project from the P6 schedule-cost data.
-3. `ensureUTBEA2601ResourceCatalogOnLoad()` — seeds the 662-row resource
-   catalog on first run.
-4. `applyUTBEA2601ResourceAssignments()` — fills named staffing on any
-   UTBEA2601 card that has no manual staffing (runs after the catalog exists).
-5. `render()`; `save()` if anything changed.
+1. `load(userId)` → parse localStorage → `migrate()` (defaults, normalizers,
+   sample-project consistency repair).
+2. `render()`; `save()` on first run for that profile.
 
-## 4. UTBEA2601 data flow (the real-project showcase)
+The boot path is deliberately free of side-effecting sync passes. A prior
+version re-derived one project's dates, progress, and dollars from an embedded
+source-system extract on **every** load, which meant manual edits to those
+fields silently did not survive a reload. That module and its client data were
+removed in V2; the P6/CES **import** machinery is retained and is now
+user-initiated rather than automatic.
+
+## 4. PM Advisor, PM Agent, and the knowledge base
 
 ```
-P6 schedule-cost workbook extract          Assignment-matrix CSV
- (assets/utbea2601-import.js)          (assets/utbea2601-resources.js)
-              │                                      │
-              ▼                                      ▼
-   applyUTBEA2601P6Controls()  ◄──── ensureUTBEA2601ResourceCatalogOnLoad()
-   · project funded value / multiplier / CPI / SPI / EAC overrides
-   · WBS elements + card dates/progress from P6 activities
-   · Task-3 gating on E1010 completion
-              │
-              ▼
-   applyUTBEA2601ResourceAssignments()
-   · leveled named staffing across a seven-person logical-role bench
-     (PM, lead preparer, two principal-engineer reviewers, two staff
-     engineers, Lead PMA for controls/records)
-   · versioned pass (project.utbeaStaffingPass): recognizes and re-levels
-     its OWN prior auto-staffing patterns; never touches manual staffing
-   · never changes status, progress, or columns
+                    state (live workspace)
+                            │
+                            ▼
+                   advisorFindings()
+   flow · cost · schedule · margin · risk · resource · governance
+   each finding: severity, evidence (real numbers), action, drill target
+                     │                       │
+        ┌────────────┘                       └────────────┐
+        ▼                                                 ▼
+  advisorHealth()                          kbPlaybookForFinding()
+  A–F per dimension                        binds finding → knowledge/*.md
+  + overall score                          passage, rendered inline, cited
+        │
+        ▼
+  agentActionsFromFindings()  ─┐
+                               ├─►  agentPlan()  ──►  preview (diff)
+  agentParseCommand(text)     ─┘    validate + resolve      │
+  (deterministic NL parsing)         ok/blocked/invalid      ▼
+                                                        agentApply()
+                                             one mutate() = one undo step
+                                     re-checks move gates, audit-trails result
 ```
 
-Card progress, dates, and dollars for UTBEA2601 are **always re-derived from
-the P6 source on load** — manual edits to those fields do not survive a
-reload by design. Manual staffing edits DO survive (the staffing pass only
-replaces rows that exactly match one of its own earlier auto-generated
-patterns, and otherwise fills empty cards only).
+**Invariants that must not be broken:**
+
+1. Card moves — human *or* agent — pass `cardMoveValidationMessage()` and then
+   `applyCardMove()`. `moveCard()` is simply `validate + mutate(applyCardMove)`;
+   the agent reuses the same two pieces so a batch is one undo step while the
+   governance is identical.
+2. **Metrics are derived, never written.** No agent operation sets CPI, SPI,
+   EAC, multiplier, or contribution margin — only the underlying data.
+3. Stage position drives percent-complete **only** in `Kanban Stage` progress
+   mode. `Rules of Credit` and `Manual Physical %` retain governed progress, or
+   a drag would silently corrupt earned value.
+4. Change orders are drafted `Requested`; approval is a CCB act, never
+   automated.
+5. Knowledge answers are **retrieved passages, never generated text**.
 
 ## 5. PM Specialist proxy (leave-alone module)
 

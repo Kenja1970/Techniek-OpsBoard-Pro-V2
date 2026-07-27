@@ -79,7 +79,7 @@ Legend: ✅ full · 👁 view only · 💲 requires `canFinance` · — hidden/b
 | **Action Items** — Decision records | ✅ | ✅ | ✅ | ✅ | 👁 | 👁 |
 | **Rules of Credit** (schemas: add/edit/delete; apply steps to cards) | ✅ | ✅ | ✅ | ✅ | ✅ | 👁 |
 | **PM Specialist — Ask** (procedure-grounded Q&A) | ✅ | ✅ | ✅ | ✅ | ✅ | 👁 outputs only |
-| **PM Specialist — Vector Store / SharePoint Check / UTBEA import** | ✅ | ✅ | ✅ | ✅ | ✅ | — (import blocked) |
+| **Procedure Library — Vector Store / SharePoint Check** | ✅ | ✅ | ✅ | ✅ | ✅ | — (import blocked) |
 | **Manager Report** (portfolio report, print/PDF export) | ✅ 💲 | ✅ 💲 | ✅ 💲 | ✅ 💲 | ✅ (no 💲 sections) | 👁 (no 💲) |
 | **Settings — simulated role, WIP policy, auto-credit** | ✅ | ✅ | ✅ | ✅ | ✅ | — (disabled) |
 | **Settings — scale/performance (demo card load)** | ✅ | ✅ | ✅ | ✅ | ✅ | — (panel hidden) |
@@ -179,7 +179,7 @@ and Viewer:
 | **Executive** | All rows | **Progress** only |
 | **EVM** | BAC, PV, EV, AC, CV, SV, CPI, SPI, EAC | **CPI, SPI** only |
 | **P6 Source** (file name, import date) | Visible | Visible |
-| **UTBEA2601 Controls** | Full P6 override set | Non-dollar controls only |
+| **Schedule Controls** (source-system projects) | Full override set | Non-dollar controls only |
 
 Default metric group for non-finance roles: **EVM** (not Executive).
 

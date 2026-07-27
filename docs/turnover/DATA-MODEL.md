@@ -49,7 +49,7 @@ default there so pre-existing workspaces load cleanly. Normalizers
 ### project
 Core: `id, name, client, boardId, programId, portfolioId, projectType, status, budget, billable, billingType (T&M | FP), startDate, endDate, baseline {budget, endDate}`
 Integration: `unanetProjectCode, unanetState, unanetUrl, ermasCode, sourceSystem, externalId, orgUnit`
-Contract/finance (UTBEA2601 pattern): `contractNumber, poOrChangeOrderNumber, description, periodOfPerformanceStart/End, multiplier, financialOverride {sourceFile, dataDate, fundedValue, multiplier, targetCostBudget, progressPct, earnedRevenue, billableSpent, actualCost, p6EstimateAtCompletion}, evmOverride, costEACOverride, billEACOverride, fundingProfile[], sourceDocuments[], projectPlans[], utbeaStaffingPass` (marker for the versioned auto-staffing pass; see ARCHITECTURE §4)
+Contract/finance (source-system pattern): `contractNumber, poOrChangeOrderNumber, description, periodOfPerformanceStart/End, multiplier, financialOverride {sourceFile, dataDate, fundedValue, multiplier, targetCostBudget, progressPct, earnedRevenue, billableSpent, actualCost, p6EstimateAtCompletion}, evmOverride, costEACOverride, billEACOverride, fundingProfile[], sourceDocuments[], projectPlans[], utbeaStaffingPass` (marker for the versioned auto-staffing pass; see ARCHITECTURE §4)
 — When `financialOverride`/`evmOverride` are present they win over card-derived
 rollups (source-system data beats local derivation).
 
@@ -113,7 +113,7 @@ workspace creation and appended by usage; feeds dashboard/report charts.
    blended assignment rates (or ERMAS budget/actuals when present).
 2. `projectRollup` sums cards; `projectEVM` derives PV/EV/AC → CV, SV, CPI,
    SPI, EAC per PMI EVM identities.
-3. `financialOverride`/`evmOverride` (source-system data, e.g. UTBEA2601 P6)
+3. `financialOverride`/`evmOverride` (source-system data, e.g. an imported P6 schedule-cost extract)
    replace derived values when present.
 4. Multiplier ↔ contribution margin: `CM% = (1 − 1/multiplier) × 100`;
    status classes keyed to the target CM setting.

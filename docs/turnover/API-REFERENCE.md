@@ -62,11 +62,25 @@ same change. Grouped:
 `ruleUsageCounts`, `add/update/deleteRuleOfCreditRaw`,
 `sortedRuleIdsForProject(pid)`, `selectedRuleId()`.
 
-**UTBEA2601** — `importUTBEA2601Project()`, `utbea2601Seed()`,
-`utbeaP6CostData()`, `utbeaMilestonePlan`, `utbeaMilestoneMappings`,
-`utbeaResourceSeedRows()`, `syncUtbResourceCatalog`, `isTask3Blocked`,
-`projectMetricRows`, `selectedMetricRows`, `projectResourceRows`,
-`orgUnitOptions()`, `projectOrgUnit(pid)`, `setProjectOrgUnitRaw(pid, org)`.
+**Metrics & org** — `projectMetricRows`, `selectedMetricRows`,
+`projectResourceRows`, `orgUnitOptions()`, `projectOrgUnit(pid)`,
+`setProjectOrgUnitRaw(pid, org)`, `isTask3Blocked`.
+
+**PM Advisor** — `advisorFindings()` returns ranked findings
+(`{severity, dimension, title, evidence, action, drill}`);
+`advisorHealth()` returns `{dimensions{...A–F}, overall{score,grade}, findings}`.
+
+**PM Agent** — `agentParseCommand(text)` → `{actions, matched, intent}`;
+`agentActionsFromFindings()`, `agentRebalanceActions()`;
+`agentPlan(actions)` → steps with `status` `ok|blocked|invalid`, a `message`,
+and a human `describe`; `agentApply(plan)` → `{applied, skipped}` (single
+`mutate`, audit-trailed); `agentResolveCard(text)`, `agentResolveResource(text)`.
+
+**Knowledge base** — `kbDocuments()`, `kbSearch(query, limit)` →
+`[{passage, score}]` BM25-ranked, `kbPlaybookForFinding(finding)` →
+`{doc, passage}`, `kbParseMarkdown(md, filename)`, `kbAddDocRaw(md, filename)`.
+
+**Views** — `viewExists(id)`, `viewIds()`, `navIds()`.
 
 **PM Specialist** *(leave-alone module)* — `pmSpecialistConfig()`,
 `setPmSpecialistConfig(endpoint, vectorStoreId)`, `pmSpecialistTabs()`,

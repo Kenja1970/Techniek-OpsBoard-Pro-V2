@@ -52,12 +52,16 @@ production · **P2** = class-above-Jira Kanban/PMI polish.
 
 ## Explicitly out of scope for the handover
 
-- **PM Specialist module** — working as designed (store-grounded answers via
-  the local proxy); do not refactor it as part of the P1 modularization
-  without a separate review.
-- **UTBEA2601 P6 sync** — by design, schedule/progress/financial fields for
-  that project re-derive from the workbook extract on every load. Treat the
-  extract files in `assets/` as read-only source data.
+- **Knowledge base** — deliberately local and retrieval-only (cited passages,
+  never generated). `assets/knowledge-corpus.js` is generated; edit
+  `knowledge/*.md` and rebuild rather than patching the bundle.
+- **PM Agent governance** — the agent shares `cardMoveValidationMessage()` and
+  `applyCardMove()` with the human drag path on purpose. Do not add a second
+  mutation route for it; that would let agent actions bypass WIP, evidence,
+  dependency, and progress-mode gates.
+- **Optional external proxy** — the OpenAI vector-store path is an escalation,
+  not a dependency. Nothing in the default product path calls it, and the API
+  key must stay server-side.
 
 ## Suggested sequencing
 

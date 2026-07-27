@@ -1,165 +1,71 @@
-## [4.7.0] - 2026-07-10
+# Changelog
 
-Role-based access control hardening — workspace, settings, and financial visibility are now consistently gated by user role.
+All notable changes to Techniek OpsBoard Pro V2.
+This project follows [Semantic Versioning](https://semver.org/).
 
-- **Workspace tab gating:** Financials and FV/EAC tabs are hidden for Engineer/Contributor and Viewer via `workspaceTabs()`; finance roles (Admin, Department Manager, Project Manager, Resource Manager) retain full access.
-- **Metrics filtering:** `filterMetricsForRole()` strips Financial group rows and dollar EVM/Executive metrics for non-finance roles; CPI, SPI, and physical Progress remain visible as performance indices without dollar exposure.
-- **Viewer lockdown:** simulated role selector disabled (top bar + Settings), WIP policy and Kanban auto-credit controls disabled, scale/performance panel hidden, board import disabled, and mutation helpers (`generateLoadCards`, `removeLoadCards`, JSON import/reset/clear) blocked with explicit toasts.
-- **Project admin gating:** budget/change-control summary and FV/EAC history sections hidden in project admin for non-finance roles; change-order row clicks blocked for register read-only roles.
-- **Reports/Summary alignment:** Manager Report financial stat cards and metrics panel require `canFinance()`; workspace Summary shows SPI/CPI + Progress for non-finance roles instead of SV$/EAC$.
-- QA extended to **467/467** (workspace tabs, metric filtering, edit/configure gates per role). Verbose role documentation updated in `docs/ROLES-AND-PERMISSIONS.md`, `docs/USER-GUIDE.md`, Word package (DFD, QA/QC, User Guide, Production Upgrade Register).
+---
 
-## [4.6.0] - 2026-07-10
+## [5.0.0] — 2026-07-27
 
-Resource assignment drill-down, PMI-aligned metrics for internal/BD projects, larger report graphs, and a schedule-scaled FV/EAC timeline.
+First release of **Techniek OpsBoard Pro V2**, a Techniek-branded fork and substantial extension of an inherited project-controls application. The lineage is intentional: V2 keeps the mature PMI/PMBOK engine and adds portfolio inspection, an acting agent, a local knowledge base, and a new design system.
 
-- **Resource drill-down & re-leveling:** Click any resource on the Resources page (🔍) to open a detail view of every card and project they're assigned to, with live utilization, an over-allocation banner, and a 4-week forecast. Adjust each card's allocation % inline to re-level utilization instantly, Open a card for full team/estimate/schedule edits, or Remove the resource from a card — all audited.
-- **Internal vs. client-delivery reporting (PMI/PMO practice):** Internal, overhead, and business-development/proposal efforts (IT, website, internal ops, pursuits) are now classified separately and gauged on **budget adherence (budget variance, CPI), schedule performance (SPI), on-time delivery, and throughput** rather than revenue/contribution margin. The Manager Report splits *Client delivery financials* from a new *Internal & business development performance* panel (with its own budget-adherence, SPI, and progress charts). The Projects list and project workspace surface budget variance for internal work in place of contribution margin. Client-facing delivery keeps the existing financial metrics unchanged.
-- **Larger, more legible report graphs:** Manager/Client report charts were enlarged (bigger grid cards, radial gauges/donuts, and axis/number type) for immediate at-a-glance reading, per the app-wide Nielsen Norman UX standard.
-- **Schedule-scaled FV/EAC timeline:** The FV & EAC History chart now plots against a real calendar axis spanning the project's baseline start → finish (from the Kanban card baselines), with evenly spaced, legible date ticks; Cost/Bill EAC accrue on each activity's baseline finish instead of clustering on the import date.
-- QA extended to **450/450** (internal/BD classification, internal metric computation, BD-pursuit detection). Regenerated Techniek Word package under `docs/word/`.
+### Added — PM Advisor (deterministic portfolio inspection)
+- Grades seven dimensions (Cost · Schedule · Margin · Flow · Risk · Resource · Governance) A–F with an overall health score.
+- Ranked findings, each carrying severity, **hard evidence** (the actual numbers), a **recommended action**, and a **drill-through** that resolves to a card, project + tab, board, resource, or view.
+- Kanban flow diagnostics: WIP-limit breaches, aging work past 45 days with the oldest item named, bottleneck-stage detection where aged work accumulates, dependency-blocked items, unassigned work, and unestimated work (which silently corrupts BAC, utilization, and forecast).
+- PMI diagnostics: CPI cost overrun, negative VAC, forecast EAC exceeding funded value (stop-work exposure), SPI slip with schedule variance in dollars, overdue clustering, and contribution margin against target reported with the earned multiplier.
+- Governance and risk: change orders past a decision clock, stale risk reviews, past-due risk responses, and high-exposure risks sitting on an Accept strategy.
+- Runs entirely offline with no AI service.
 
-## [4.5.0] - 2026-07-09
+### Added — PM Agent (it can act, not just advise)
+- **Command mode** — deterministic natural-language parsing for move, field updates (estimate / logged hours / progress / priority / due), hour logging, assignment with allocation, reschedule, and WIP rebalance. Works with **no AI service running**.
+- **Recommendation mode** — proposes a batch of fixes derived from Advisor findings, each carrying its reasoning.
+- **Preview → approve → apply**: every plan is shown as a diff with per-action status (`ok` / `blocked` / `invalid`) before anything changes.
+- Applies through the **same validated path a human drag uses** — `applyCardMove()` was extracted from `moveCard()` so a batch runs inside one `mutate()` (a single undo step) while still passing `cardMoveValidationMessage()`. WIP limits, evidence gates, dependency gates, and progress-mode isolation all hold for the agent.
+- Move gates are **re-checked at apply time**, because an earlier action in the same batch can change the board.
+- Unresolvable references are rejected as `invalid` with a human message rather than silently no-oping.
+- **Metrics stay derived** — there is deliberately no operation that writes CPI, SPI, EAC, multiplier, or contribution margin; the agent edits only the underlying data those are computed from.
+- **Change orders are drafted as `Requested`, never auto-approved** — approval is a CCB decision.
+- Every applied batch is audit-trailed as agent-attributed.
 
-Industry-standard risk register (ISO 31000 / PMBOK) with residual scoring, full add/edit/delete, CSV export, and a signed Risk Management Plan tracked with each project.
+### Added — local PM knowledge base (removes the API-key dependency)
+- Eight authored documents in `knowledge/*.md` covering PMBOK-informed cost and schedule practice, Kanban WIP and flow/aging, A/E multiplier and contribution margin, risk register discipline, integrated change control, and resource capacity — plus a template for your own procedures.
+- `scripts/build-knowledge.mjs` compiles them to `assets/knowledge-corpus.js`. A bundle rather than runtime `fetch()` specifically because `fetch` is blocked on `file://`; the markdown stays the diffable source of truth.
+- **BM25 retrieval in the browser** (IDF-weighted term frequency with length normalization) over 33 sections. Returns **cited passages, never generated text**, so nothing can be hallucinated.
+- Every document declares a `dimension` and `triggers`, so **each Advisor finding is bound to the playbook that answers it** — guidance arrives attached to live data.
+- Users add procedures either by dropping markdown in `knowledge/` and rebuilding, or by uploading `.md` at runtime (stored in the workspace, ranked alongside the built-ins).
+- The external OpenAI vector store survives only as an explicitly optional escalation path.
 
-- **Industry-standard risk records:** Every risk now carries a **type** (threat/opportunity with the matching PMBOK response strategies — Avoid/Mitigate/Transfer/Accept for threats, Exploit/Enhance/Share/Accept for opportunities), **inherent** and **residual** (post-response) probability × impact scoring, owner, trigger/early-warning indicator, **date identified / last reviewed / response due**, and quantified **cost ($) and schedule (days) impact**. Added `normalizeRisk()` so legacy records are backfilled automatically on load.
-- **Fully manageable project register:** The project workspace **Risk Register** tab now supports add / edit / delete inline (click any row to edit), shows inherent and residual scores side-by-side, and includes **Export register (CSV)** at both project and portfolio level. The portfolio Risk Register gains Type and Residual columns.
-- **Signed Risk Management Plan (tracked with the project):** Upload the approved, signed plan (PDF/DOCX/XLSX up to 8 MB, stored locally) *or* link the controlled copy in SharePoint/DMS, with **revision, signed-by, signed date, and approver** metadata. Replace supersedes the prior version into a history trail; download/open and remove are one click. The plan travels in the project package and JSON export, and every change is written to the audit trail.
-- QA extended to **446/446** (risk type present, residual scoring bounded, identification metadata, `normalizeRisk` backfill of legacy records, CSV export available). Regenerated Techniek Word package under `docs/word/`.
+### Added — dark-first Techniek brand system
+- Dark control-room theme is the default; the corporate-true light theme remains a toggle and is **forced for print** (print media resets every token to the light palette).
+- Techniek corporate constants — `--tek-blue #0057d9`, `--tek-green #2ea043`, `--tek-gold #f2c94c` — and the signature tri-color gradient on the active nav rail, page headers, auth crest, and brief headers.
+- 6px/4px radius system, Inter-first stack, per-theme focus ring, tabular numerals on every financial surface.
+- Fixed-contrast fills for avatars and Gantt bars so their white labels pass AA in **both** themes.
+- **WCAG AA verified computationally** in the live browser: every checked pair ≥ 4.83:1 in both themes.
 
-## [4.4.0] - 2026-07-09
+### Changed
+- Product is **Techniek OpsBoard Pro V2**; storage keys `techniek-opsboard-v2[-accounts]`; global `window.TechniekOpsBoard`.
+- `APP_VERSION` and `SCHEMA_VERSION` are both `5.0.0`, fixing a version/schema drift inherited from the source application; QA now asserts they cannot diverge again.
+- Org taxonomy generalized: `EFS_ORGS` → `ORG_UNITS` (Techniek delivery units), `project.efsOrg` → `project.orgUnit` with legacy migration.
+- WBS grouping now derives from the project's own WBS hierarchy (`wbsGroupForCode`) instead of hardcoded activity-code prefixes; per-project special-casing replaced by `hasSourceSystemControls()`.
+- Rules of Credit ship six Techniek PMO standard A/E schemas (deliverable, calculation package, drawing package, study, field/commissioning, milestone), each validated to sum to 100%.
+- Demo portfolio **derives** budgets and schedule dates from seeded work using the production math, so the demo cannot drift from how the app computes. Multipliers land on 2.4 / 2.7 / 3.0 / 3.2 / 4.5; CM% spans 58–78% around the 66.7% target; CPI 0.50–1.12; SPI 0.72–1.11.
+- Demo dates are anchored to a reference day and shifted at build time, so the demo always shows the authored picture instead of decaying into "everything is overdue".
+- PM Specialist split by audience: the manager-facing **Ask** surface moved into PM Advisor as *Procedure Q&A*; the admin surfaces (vector-store contents, SharePoint revision freshness) remain as **Procedure Library**.
 
-Time-phased resource loading, a deepened delivery bench, printable Gantt, and high-end report visuals.
+### Fixed
+- Revived three views that had implementations but no route in the source application: **Client Report**, **Audit Trail**, and the portfolio **Risk Register**. Issues and Decisions remain deliberately consolidated into Action Items as typed rows.
+- Replaced the last native `confirm()` with the in-app modal.
+- Corrected change-order handling in demo tuning so an applied CO no longer inflates the multiplier: the target describes the current (post-change) budget and the baseline is current minus the approved delta, giving truthful baseline-vs-current variance.
+- Adding a WBS activated closure-governance gates that were dormant in the source (no project had a WBS). Rather than weakening them, the demo now satisfies them — closed work carries evidence, open work deliberately does not, so the evidence gate is demonstrable.
 
-- **Time-phased utilization (correct model):** Utilization is now a real weekly load — each card's *remaining* effort share is spread across its live working weeks (`remaining ÷ remaining weeks ÷ weekly capacity`) instead of measuring the whole-project backlog against a single week. This turns nonsensical readings (e.g., 5,480%) into realistic engineering resource-loading percentages. Added `cardRemainingWeeks()` and a `weeklyDemand` figure to `resourceUtil()`.
-- **Deepened UTBEA2601 bench (7 → 13):** Brought in additional named staff at the appropriate levels — second/third lead preparers (Arey, Bittanit), a third independent reviewer (Andrews), two more staff engineers (Acharya, Boggess), and a deputy project-controls PMA (Hawes). Re-leveled the assignment map by task family (Task 1/2/3) so large recurring and support-package activities spread across the bench. Result: on the HFIR project only the PM remains over 100% (during mandatory one-week client-review/close-out weeks) instead of six over-allocated staff.
-- **Staffing pass 3:** Versioned staffing now recognizes and re-levels its own pass-1 and pass-2 auto-staffing on existing workspaces while never clobbering manual edits; statuses, progress, and P6 metrics are untouched and the pass remains idempotent.
-- **Gantt → PDF:** The Gantt & Critical Path view (board and project workspace) has a **Print / PDF** button that prints in landscape with color-accurate bars and the critical path preserved, then reverts orientation.
-- **High-end report graphs:** Added a zero-dependency inline-SVG chart library (donut/pie, radial gauge, grouped bars, horizontal bars). The **Manager Report** now leads with a *Portfolio visual snapshot* (budget vs earned vs direct labor, PV/EV/AC earned value, program CPI/SPI gauges, schedule-health and budget-burn donuts, progress-by-project bars). The **Client Report** carries a client-safe *Status at a glance* (overall progress, milestone and deliverable completion, schedule health, workstream progress) — no cost or margin data. Charts are theme-aware and print accurately.
-- QA extended to **441/441** (time-phased weekly demand and utilization per resource, deepened bench ≥ 12, only a few over 100%, distinct Task 1/2/3 lead preparers). Regenerated Techniek Word package under `docs/word/`.
+### Removed
+- All prior-vendor identity: product names, logo, org codes, storage keys, and global namespace.
+- An inherited real client project (~390 KB of embedded schedule-cost data) and its import module, staffing passes, and dedicated view. **The P6-import machinery is retained**; only the client data was removed.
+- A live API key that was present in the source tree's local environment file — never copied into this repository.
 
-## [4.3.0] - 2026-07-09
-
-Resource assignment UX overhaul to Nielsen Norman standards, with a standing UX order for the whole project.
-
-- **Card face:** Each card now names the **Responsible (lead)** person with their role and a visible allocation % (no hover required). Additional team members render as labeled percentage chips (e.g., "Imran 30%"), and cards with no resource are clearly flagged as **Unassigned**. (NN #1 visibility, #6 recognition.)
-- **Unified editor:** Removed the redundant standalone "Assignee" dropdown. The card editor now has a single **Team & allocation** control — the lead row is the card's primary assignee (one source of truth). (NN #4 consistency, #8 minimalism.)
-- **Searchable resource picker:** Replaced the weak native datalist with a custom combobox that filters the entire resource register by name, role, department, type, or company, showing avatar + name + context, with full keyboard support (↑/↓/Enter/Esc). (NN #6 recognition, #7 flexibility.)
-- **Live validation:** The editor shows a live allocation total with balanced / under / over-allocated status; resources are added on demand up to three. (NN #5 error prevention.)
-- **Read-only card view** now shows the responsible lead plus the full allocated team.
-- **Standing order:** Added `.cursor/rules/ux-nielsen-norman.mdc` (always-applied) requiring every future UI change to meet or exceed the 10 Nielsen Norman heuristics, and to reuse the `resourcePicker` / `buildTeamEditor` / `cardTeamHTML` patterns.
-- QA extended to **427/427** (card names responsible lead, allocation % visible without hover, unassigned flagged, lead = primary assignee). Regenerated Techniek Word package under `docs/word/`.
-
-## [4.2.0] - 2026-07-09
-
-Production-grade Kanban / PMI hardening and Techniek Word documentation package.
-
-- **Critical:** Manual Physical % and Rules of Credit progress are no longer overwritten when cards move on the Kanban board; auto-credit applies only to `Kanban Stage` mode.
-- **Kanban pull system:** Hard WIP policy (default) blocks pulls that would exceed a stage limit; soft policy warns and allows. Configurable in Settings.
-- **EVM:** Project percent complete is now effort-weighted by estimate hours so Summary / Financials / Reports stay consistent with large vs small activities.
-- **moveCard** resolves the board from `card.boardId` (not only the active board) so multi-board workspaces reorder and stage-credit correctly.
-- **Sample projects:** Manual Progress Sample uses a production-legal dependency chain (Done → Review → Ready); Kanban Stage Sample progress is re-derived from column geometry; migrate repairs existing local workspaces.
-- QA extended (Manual retention, hard WIP, sample EV consistency). Techniek-branded Word package under `docs/word/` (QA/QC Report, Data Flow Diagrams, User Guide, Production Upgrade Register).
-
-## [4.1.0] - 2026-07-09
-
-Role-boundary enforcement and UTBEA2601 resource leveling.
-
-- Enforced logical role boundaries in the views: Engineer / Contributor (V15 "Team Member") is now read-only on the Risk Register, Change Control, the Decisions register, Decision-type action items, and project administration, while retaining full task execution and the ability to raise/edit Issues, Actions, Evidence, and RFIs.
-- Resource Manager now administers the resource register (previously excluded — a logical gap).
-- Viewer keeps JSON/CSV export for review but loses import, reset-demo, and clear-local-data actions in Settings / Data.
-- Leveled UTBEA2601 staffing across a seven-person logical-role bench: PM (Brown), lead preparer (Gromatzky), principal-engineer reviewers (Bartlett, Altmayer), staff-engineer support (Ball, Aybar Villafane), and Lead PMA for project controls/records (Brooks). LOE management activities split PM/controls, QA document upload is PMA-led records management, Task 5 support packages have distinct leads, and no resource carries more than ~31% of assigned hours (previously two people carried effectively all of it).
-- Staffing pass is now versioned (`utbeaStaffingPass`): it recognizes and re-levels its own earlier auto-staffing while never touching manual staffing edits; statuses, progress, and P6 metrics remain untouched.
-- QA suite extended to 410 checks (register-governance gates per role, leveling distribution, distinct Task 5 leads, LOE splits, PMA records ownership); schema promoted to 4.1.0.
-
-## [4.0.0] - 2026-07-09
-
-Turnover release: production-review hardening and a complete outgoing documentation package for handoff to the internal engineering team.
-
-- Added named staffing to every UTBEA2601 schedule activity from the workbook assignment data (Brown/PM, Gromatzky/Preparer, Bartlett/Reviewer); client review-and-approve milestones are PM-tracked only. Statuses, progress, columns, and P6 metrics are untouched, the pass never overrides manual staffing, and it is idempotent (verified by QA).
-- Staffing runs on load after the resource catalog seeds, so existing workspaces pick it up without a reset.
-- Removed development artifacts from seeded data (migration-note activity text, sample-card wording now reads as reference work items).
-- New documentation set: `docs/USER-GUIDE.md`, `docs/ROLES-AND-PERMISSIONS.md` (functionality matrix for all six roles derived from the code gates), and `docs/turnover/` (ARCHITECTURE, DATA-MODEL, API-REFERENCE, PRODUCTION-READINESS with prioritized P0/P1/P2 gap register).
-- Rewrote `README.md` around the documentation index and current capabilities; version history lives here in the changelog only.
-- QA suite extended to 399 checks (UTBEA2601 staffing coverage); schema promoted to 4.0.0.
-
-## 3.9.3 - 2026-07-09
-- Added a board-level Kanban WIP control status badge and per-column WIP tooltips so over-limit stages remain visible even when board filters are active.
-- Added QA coverage for WIP summary reporting and over-limit detection.
-
-## 3.9.2 - 2026-07-08
-- Added a visible Settings / Data Microsoft Fabric data connector panel for ERMAS and accounting data, with an editable Fabric URL and Open Fabric data link.
-- Added migration/default state and QA coverage for the Fabric ERMAS/accounting connector setting.
-
-## 3.9.1 - 2026-07-08
-- Made UTBEA2601 auto-create/synchronize on app load when missing from local browser data.
-- Added selectable Project Workspace metrics for executive, financial, EVM, and P6-source controls so UTBEA2601 funded value, 2.7x multiplier, CPI, SPI, CM, EAC, and source basis are visible.
-- Strengthened PM Specialist Ask project-context prompts so responses align to the selected focus: profitability, schedule, compliance, or general PM support.
-
-## 3.9.0 - 2026-07-08
-- Synchronized UTBEA2601 to the P6 schedule-cost workbook with funded value $1,672,733.55, 2.7x multiplier controls, P6 CPI/SPI, schedule dates, activity progress, and P6 source trace fields.
-- Updated the dashboard to show holistic workflow health across all boards and capped insights/alerts at ten total.
-- Added change-order file upload/tracking, project-specific PM Specialist Ask context, and tighter global New Card visibility.
-
-## 3.8.0 - 2026-07-08
-- Added full vector-store file pagination so PM Specialist can list the actual store count beyond the OpenAI 100-file page limit, with a scrollable in-window file table.
-- Added a PM Assistance working progress bar and tightened answer presentation for copy-ready Techniek PM brief formatting.
-- Added up to three percentage-based resource assignments per card, preserving assigned-user initials while driving utilization, card cost, EAC, and project resource reports from weighted allocations.
-- Added editable dependency/blocker logic on cards, including linked work items, dependency WBS codes, and selectable blocking rules.
-- Rebuilt rules-of-credit editing as a table with add/delete row controls and direct edit access from linked cards.
-- Added two compact sample projects: one manual physical-progress project and one Kanban-stage-progress project, seeded safely into existing workspaces without replacing UTBEA2601.
-- Updated QA to independently re-derive weighted resource allocation, blended card rates, dependency logic, vector pagination support, and PM Assistance progress behavior.
-
-## 3.7.0 - 2026-07-08
-- Tightened the card editor into a denser, scoped compact modal while preserving responsive labels and controls.
-- Added multi-file vector-store upload from the PM Specialist Vector Store tab.
-- Restyled PM Assistance output as a branded Techniek copy-ready brief with concise citations and expandable source details.
-- Updated the PM Assistance proxy persona to respond as a practical senior PM partner using only retrieved vector-store material.
-
-## 3.6.0 - 2026-07-08
-- Added project-level WBS elements with add/edit/delete/upload controls and schedule-native WBS / Schedule ID display.
-- Rebuilt UTBEA2601 from the March schedule amendment using Activity IDs such as A1025, C1020, D1040, E1010, F1000, and G1000.
-- Removed legacy numeric WBS display for UTBEA2601 cards and added validation for schedule-coded WBS references, billing evidence, closed-card evidence, and Task 3 gating.
-
-## 3.5.0 - 2026-07-08
-- Enriched PM Specialist vector-store file listing with OpenAI file metadata so managers can see file names, size/purpose, status, add uploads, attach existing files, and delete vector-store files.
-- Restricted PM Specialist answers to retrieved vector-store content; local application search is no longer used as an answer fallback.
-- Added Rules of Credit edit/delete controls, project-use sorting, and usage counts.
-- Added list-level delete controls to the Action Items table.
-
-## 3.4.0 - 2026-07-08
-- Made the rules-of-credit workflow explicitly deliverable-driven: deliverables map to WBS work packages, WBS packages map to activities, and activities earn progress through objective rules.
-- Added action item deletion, project-filtered change control, project-plan revision management, and generated-resource placeholder cleanup.
-- Stopped UTBEA2601 imports from creating default-rate resource rows for every preparer; preparer names remain on cards unless a real rated resource exists.
-
-## 3.3.0 - 2026-07-08
-- Reduced UTBEA2601 Kanban scope to five milestone-level task cards with child payment/subcard detail and workbook source traceability.
-- Consolidated issues and decisions into project-scoped action items with assignees, status, due dates, evidence requirements, and closeout evidence.
-- Removed Audit Trail from the control-center navigation while preserving internal audit data for imports and governance.
-- Split WBS List from Kanban Board, made project resources dense/searchable/ranked, and added report PDF export via browser Save as PDF.
-- Added rules-of-credit progress governance so Kanban movement can be prevented from auto-awarding physical percent complete.
-
-﻿# Changelog
-
-## 3.2.0 - UTBEA2601 source alignment and rules of credit
-
-- Removed UTBEA2601 project controls from PM Specialist and added a first-class Rules of Credit module.
-- Expanded UTBEA2601 source import to use task-list preparers, `% Task` progress, EV schedule baseline dates, risk-plan metadata, and contract funding profile.
-- Added Kanban project filtering, dynamic project resource rollups, and contract value/EAC reporting in Project Workspace reports.
-
-## 3.1.0 - PM Specialist and UTBEA2601 import
-
-- Added PM Specialist workspace with Ask, Vector Store, SharePoint Check, Rules of Credit, and UTBEA2601 tabs.
-- Added server-side OpenAI proxy for vector-store file list/add/delete/upload and Responses API file search.
-- Imported UTBEA2601 workbook seed with activities, deliverables, open action items, resources, and rules-of-credit templates.
-- Removed browser-side API key storage for OpenAI secrets; keys now belong in non-committed `server/.env.local`.
-
-## 3.0.0 - Techniek OpsBoard Pro V2
-
-- Renamed and repositioned the app as Techniek OpsBoard Pro V2.
-- Added Project Workspace tabs for Summary, WBS/Kanban, Gantt, Resources, Financials, Risks, Issues, Changes, Decisions, FV/EAC, Attachments, and Reports.
-- Added WBS-capable work-item fields, CES/P6 CSV import, project package export, and ERMAS variance logic.
-- Added program, portfolio, issue, decision, resource engagement, resource availability, import, integration settings, and audit-trail entities.
-- Added public namespace `window.TechniekOpsBoard` and retained `window.TechniekOpsBoard` as a compatibility alias.
-- Expanded QA to 264/264 passing checks.
+### Quality
+- QA harness expanded to **502 checks across 32 groups**, all passing. It drives production code paths through `window.TechniekOpsBoard._qa` and independently re-derives every metric from raw data.
+- New groups cover the Advisor engine (including reactivity — fixing a WIP breach clears the finding and raises the score), the PM Agent (resolution, parsing, every governance gate, real mutation, audit trail, single-step undo), the knowledge base (retrieval ranks the correct playbook first; a nonsense query returns nothing), the brand system, and navigation completeness in both directions.
+- Two vacuous assertions inherited during the port were replaced with real ones (a source grep and genuine view-registry checks).
+- CI guardrails extended: knowledge corpus must be in sync with `knowledge/*.md`, no native `alert()`/`confirm()`, corpus files in the required-file manifest.

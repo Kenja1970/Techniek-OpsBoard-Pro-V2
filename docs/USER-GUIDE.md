@@ -5,13 +5,17 @@
 
 ## Getting started
 
-1. Serve the folder (`python -m http.server 8081 --bind 127.0.0.1`) and open
-   http://127.0.0.1:8081/.
+1. Open `index.html` directly — it runs offline from `file://`. To serve it
+   instead: `python -m http.server 8100`, then open http://localhost:8100/.
 2. First launch creates a **Local Admin** profile and a fully seeded fictional
-   Techniek workspace, including the UTBEA2601 (HFIR Pressure Vessel
-   Replacement) showcase project synchronized from its P6 schedule-cost file.
-3. Optional: start the PM Specialist proxy —
-   `node server/pm-specialist-proxy.mjs` (needs `server/.env.local`).
+   Techniek portfolio: seven projects spanning delivery, pursuit, and internal
+   work, with a deliberate WIP breach, aging cards, pending change orders,
+   stale risks, and an over-allocated engineer — so PM Advisor has real
+   findings to show.
+3. Nothing else is required. The PM knowledge base, PM Advisor, and PM Agent
+   all run locally with **no API key and no network**. The optional external
+   vector-store proxy (`node server/pm-specialist-proxy.mjs`) is only needed if
+   you want to escalate procedure questions to a hosted store.
 
 **Keyboard:** `/` search · `N` new card · `?` help · `Ctrl+Z / Ctrl+Shift+Z`
 undo/redo · `Esc` close modal.
@@ -24,11 +28,33 @@ the 3.0x multiplier target, workflow health per board, and the ten most
 important alerts. Financial tiles appear only for finance-enabled roles.
 
 ### Project Workspace
+## PM Advisor
+
+Three tabs, and the place to start each morning.
+
+- **Findings** — a graded health card per dimension (Cost · Schedule · Margin ·
+  Flow · Risk · Resource · Governance) and a ranked list of what is wrong, each
+  with the actual numbers, the recommended move, an **Open** button that jumps
+  straight to the offending card/project/resource, and an expandable **Playbook**
+  citing the procedure that covers it.
+- **Ask & Act** — type a change (`move Sensor harness routing to Review`,
+  `set estimate of X to 12`, `assign Diego Romero to Y at 40%`,
+  `push Z by 5 days`, `rebalance WIP`) or press **Propose fixes from findings**.
+  You get a diff to review before anything happens; blocked actions show the
+  governance reason and cannot be applied. Applying is one undo step.
+- **Procedure Q&A** — search the local PM knowledge base. Results are cited
+  passages from real documents, never generated text. Add your own `.md`
+  procedures here, or commit them under `knowledge/`.
+
+None of this needs an API key or a network connection.
+
+## Project Workspace
+
 The per-project control center. Pick a project at the top; tabs:
 
 - **Summary** — key facts, funded value, multiplier, CPI/SPI, condition.
 - **WBS List** — editable WBS register (add/edit/delete/upload/export).
-  UTBEA2601 shows schedule-native Activity IDs (A1000, C1005, …).
+  Projects imported from a schedule system keep their native Activity IDs.
 - **Kanban** — project-filtered board; card movement is validated against
   dependencies (e.g. Task 3 work is gated until E1010 closes) and can be set
   to not auto-credit progress.
@@ -176,7 +202,11 @@ items. Export for review is allowed.
 ## Data safety
 
 Data lives only in this browser profile. **Export JSON from Settings / Data
-before clearing browser data or switching machines.** The UTBEA2601 project
-re-synchronizes from its P6 source files on every load — schedule, progress,
-and financial values on that project are source-driven; staffing edits are
-preserved.
+before clearing browser data or switching machines.** Projects carrying
+source-system overrides (`financialOverride` / `evmOverride` from an imported
+P6 or ERMAS extract) report those values in preference to locally derived
+rollups; everything else is computed live from your cards.
+
+Procedure files you upload to the knowledge base are stored with the workspace
+and travel with the JSON export. Procedures committed under `knowledge/` ship
+with the application itself.
