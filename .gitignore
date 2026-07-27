@@ -19,6 +19,6 @@ backups/
 serve.ps1
 .claude/
 
-# Local PM Specialist proxy secrets
+# Local agent proxy secrets
 server/.env.local
 .env.local

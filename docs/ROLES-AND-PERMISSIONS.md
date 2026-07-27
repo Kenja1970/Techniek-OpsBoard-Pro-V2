@@ -78,8 +78,7 @@ Legend: ✅ full · 👁 view only · 💲 requires `canFinance` · — hidden/b
 | **Action Items** — Issues, Actions, Evidence, RFIs | ✅ | ✅ | ✅ | ✅ | ✅ | 👁 |
 | **Action Items** — Decision records | ✅ | ✅ | ✅ | ✅ | 👁 | 👁 |
 | **Rules of Credit** (schemas: add/edit/delete; apply steps to cards) | ✅ | ✅ | ✅ | ✅ | ✅ | 👁 |
-| **PM Specialist — Ask** (procedure-grounded Q&A) | ✅ | ✅ | ✅ | ✅ | ✅ | 👁 outputs only |
-| **Procedure Library — Vector Store / SharePoint Check** | ✅ | ✅ | ✅ | ✅ | ✅ | — (import blocked) |
+| **PM Advisor — Procedure Q&A** (local corpus) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (read-only; upload blocked) |
 | **Manager Report** (portfolio report, print/PDF export) | ✅ 💲 | ✅ 💲 | ✅ 💲 | ✅ 💲 | ✅ (no 💲 sections) | 👁 (no 💲) |
 | **Settings — simulated role, WIP policy, auto-credit** | ✅ | ✅ | ✅ | ✅ | ✅ | — (disabled) |
 | **Settings — scale/performance (demo card load)** | ✅ | ✅ | ✅ | ✅ | ✅ | — (panel hidden) |
@@ -144,8 +143,8 @@ Legend: ✅ full · 👁 view only · 💲 requires `canFinance` · — hidden/b
   and Settings), WIP policy and Kanban auto-credit controls disabled, scale/
   performance panel hidden, board import disabled.
 - Kanban/Gantt drag disabled; card editors open in read-only mode.
-- PM Specialist: may review previously generated outputs but may not run
-  imports or modify procedure records.
+- Procedure Q&A: may search the corpus and read cited passages, but may not
+  upload procedure files.
 - Settings / Data: may export JSON / reports CSV for review; import, reset,
   clear, and Upload & plan board are disabled.
 

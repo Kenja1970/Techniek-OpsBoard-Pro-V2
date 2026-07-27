@@ -5,6 +5,28 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.2.0] — 2026-07-27
+
+Removes the inherited OpenAI vector-store RAG. **The procedures themselves stay** — they were never in the vector store. They live in `knowledge/*.md`, are compiled into the app, and are retrieved in-browser with BM25.
+
+The vector store was the weaker half of a duplicated capability: it needed a key, a running proxy, and a network round-trip to answer questions the local corpus already answers offline with cited passages that cannot be hallucinated.
+
+### Removed
+- **Procedure Library** — the left-nav entry and its whole view, including both the *Vector Store* and *SharePoint Check* tabs. The SharePoint tab went with it because it existed solely to compare a procedure revision against its vector-store copy (`procedureVersionStatus` returned "Needs source" without a `vectorFileId`); with no store, it graded nothing.
+- **"Escalate to an external vector store"** from PM Advisor → Procedure Q&A. That tab is now purely the local corpus.
+- **Backend** — `server/pm-specialist-proxy.mjs` is replaced by `server/agent-proxy.mjs`, which serves only `/health` and `/api/agent`. Deleted: `/api/file-search`, `/api/vector-store/files` (GET/POST/DELETE), `/api/vector-store/upload`, `/api/sharepoint-registry`, the OpenAI client, the vector-store pagination/enrichment helpers, and the multipart parser that existed only for store uploads. The proxy is now 187 lines, down from 344.
+- `OPENAI_API_KEY`, `OPENAI_VECTOR_STORE_ID`, `OPENAI_PM_MODEL` from `.env.local.example`; `server/data/` and its empty procedure registry; the orphaned `.pm-brief` / `.pm-citation` / `.vector-store-table-scroll` CSS.
+
+### Changed
+- `settings.pmSpecialistEndpoint` → **`settings.agentEndpoint`**; `PM_SPECIALIST_PROXY_DEFAULT` → `AGENT_PROXY_DEFAULT`. The Settings field is now labelled **Agent proxy** and states that Procedure Q&A needs no endpoint at all.
+- **Migration is destructive on purpose.** A workspace saved by 5.1.0 carries its old endpoint forward under the new name, then has `openAiVectorStoreId`, `vectorStoreFiles`, `sharePointProcedures`, and `ragQueries` deleted — a stale vector-store id should not survive in a product that no longer has a vector store.
+
+### Unchanged
+The local knowledge base, BM25 retrieval, finding→playbook binding, markdown upload, and the entire PM Agent LLM path (`/api/agent`, intent interpretation, narration, sanitisation, governance) all behave exactly as in 5.1.0.
+
+### Quality
+QA **523/523 across 33 groups** (down from 530 — seven checks that only exercised the deleted vector store were removed, and eight new ones were added to prove it stays deleted). Group 3c was rewritten to *prove the removal* rather than just stop testing it: no nav entry, no registered view, no vector-store keys in state, a real source grep for the deleted endpoints, and a migration test that loads a synthetic 5.1.0 workspace and asserts the retired keys are gone while `agentEndpoint` inherits the old value. A new CI guardrail fails the build if any vector-store endpoint or `OPENAI_*` variable reappears.
+
 ## [5.1.0] — 2026-07-27
 
 Completes the optional LLM layer. It is additive: nothing in the default product path requires it, and it is deliberately kept **outside the trust path**.

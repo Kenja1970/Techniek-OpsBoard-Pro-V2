@@ -203,35 +203,64 @@
     check("resource CSV template includes software example", Q.resourceCsvTemplate().indexOf("Example Software License") !== -1);
 
 
-    /* ---- 3c. PM Specialist, vector store config, SharePoint procedure check, rules of credit ---- */
-    group("3c · PM Specialist, procedure RAG, and rules of credit");
+    /* ---- 3c. Agent proxy config, vector-store removal, rules of credit ---- */
+    group("3c · Agent proxy, vector-store removal, and rules of credit");
     Q.resetDemo();
-    var pmCfg = Q.pmSpecialistConfig();
-    check("PM Specialist proxy defaults locally", pmCfg.endpoint === "http://127.0.0.1:8787", "got " + pmCfg.endpoint);
-    check("Vector store ID is unset until configured per deployment", pmCfg.vectorStoreId === "", "got '" + pmCfg.vectorStoreId + "'");
-    check("Secret handling warns against browser key storage", /not stored in browser/i.test(pmCfg.secretHandling));
+    var pmCfg = Q.agentProxyConfig();
+    check("Agent proxy defaults locally", pmCfg.endpoint === "http://127.0.0.1:8787", "got " + pmCfg.endpoint);
+    check("Secret handling warns against browser key storage", /never stored in browser/i.test(pmCfg.secretHandling));
+    check("Agent endpoint is settable and normalized", Q.setAgentEndpoint("http://127.0.0.1:9999") === "http://127.0.0.1:9999" &&
+      Q.setAgentEndpoint("") === "http://127.0.0.1:8787");
     Q.setApiConfig("https://api.example.com/opsboard", "sk-should-not-persist");
     check("OpenAI-style API key is not persisted in browser state", Q.state().settings.apiKey === "");
     var roc = Q.rulesOfCreditValidation();
     check("Default rules-of-credit schemas seeded", roc.length >= 5, "rules " + roc.length);
     check("Rules of credit pass 100% validation", roc.every(function (r) { return r.valid; }));
-    var currentProc = { sharePointUrl: "https://sharepoint.example/proc.docx", procedureVersion: "R2", vectorFileId: "file-123", vectorVersion: "R2" };
-    var oldProc = { sharePointUrl: "https://sharepoint.example/proc.docx", procedureVersion: "R3", vectorFileId: "file-123", vectorVersion: "R2" };
-    check("Procedure status detects current version", Q.procedureVersionStatus(currentProc) === "Current");
-    check("Procedure status detects outdated vector copy", Q.procedureVersionStatus(oldProc) === "Outdated");
-    Q.refreshProcedureStatuses();
-    check("Procedure status refresh stamps records", (Q.state().sharePointProcedures || []).every(function (p) { return p.status && p.lastChecked; }));
     check("Local PM search returns rule hits", Q.localPmSearch("credit").some(function (h) { return h.kind === "Rule of Credit"; }));
+
+    // --- The external vector-store RAG is gone, not merely hidden -------------
+    // Procedures themselves stay: they live in the local corpus (group 17).
+    check("no vector-store nav entry remains", Q.navIds().indexOf("pmspecialist") === -1);
+    check("no Procedure Library view remains", !Q.viewExists("pmspecialist"));
+    check("workspace carries no vector-store state", (function () {
+      var s = Q.state();
+      return s.vectorStoreFiles === undefined && s.sharePointProcedures === undefined && s.ragQueries === undefined;
+    })());
+    check("settings carry no vector-store id", Q.state().settings.openAiVectorStoreId === undefined);
+    check("migration purges legacy vector-store keys and keeps the proxy endpoint", (function () {
+      // A workspace saved by 5.1.0 still holds the retired keys. Loading it must
+      // drop them AND carry the old endpoint name forward, not silently reset it.
+      var legacy = JSON.parse(JSON.stringify(Q.state()));
+      delete legacy.settings.agentEndpoint;   // a real 5.1.0 workspace has no such key
+      legacy.settings.pmSpecialistEndpoint = "http://127.0.0.1:7777";
+      legacy.settings.openAiVectorStoreId = "vs_legacy_should_vanish";
+      legacy.vectorStoreFiles = [{ id: "file-legacy" }];
+      legacy.sharePointProcedures = [{ id: "sp-legacy" }];
+      legacy.ragQueries = [{ id: "rag-legacy" }];
+      var migrated = Q.migrateRaw(legacy);
+      return migrated.settings.agentEndpoint === "http://127.0.0.1:7777" &&
+        migrated.settings.pmSpecialistEndpoint === undefined &&
+        migrated.settings.openAiVectorStoreId === undefined &&
+        migrated.vectorStoreFiles === undefined &&
+        migrated.sharePointProcedures === undefined &&
+        migrated.ragQueries === undefined;
+    })());
+    check("no vector-store or file-search call remains in app.js source", (function () {
+      // Real source grep over http; skipped on file:// where XHR is blocked.
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "../app.js", false);
+        xhr.send(null);
+        if (xhr.status && xhr.status >= 400) return true;
+        var src = xhr.responseText || "";
+        if (!src) return true;
+        return !/\/api\/vector-store/.test(src) && !/\/api\/file-search/.test(src) && !/\/api\/sharepoint-registry/.test(src);
+      } catch (e) { return true; }
+    })());
     // Generic project fixture from the Techniek demo portfolio (no client-specific data).
     var fx = Q.state().projects.filter(function (p) { return Q.state().cards.some(function (c) { return c.projectId === p.id; }); })[0] || Q.state().projects[0];
     check("demo portfolio provides a project fixture", !!fx);
     check("contract value helper uses funding profile", Q.contractValue(fx.id) >= 0);
-    check("PM Specialist answers are vector-store only", Q.pmSpecialistStoreOnly() === true);
-    check("PM Assistance summary is brief", Q.pmAnswerSummary("Executive answer\nRecommended actions\nDetails").indexOf("Executive answer") !== -1);
-    check("PM Assistance copy text includes sources", Q.pmCopyText("Answer", [{ filename: "Procedure.pdf", file_id: "file-1" }]).indexOf("Sources") !== -1);
-    check("PM Assistance citation label is concise", Q.pmCitationLabel({ filename: "Procedure.pdf" }, 0) === "Source 1 - Procedure.pdf");
-    check("vector store file display prefers filename", Q.vectorStoreFileName({ id: "file-1", filename: "Procedure.pdf" }) === "Procedure.pdf");
-    check("vector store all-file pagination is supported", Q.vectorStoreAllFilesSupported());
     check("PM Assistance working progress is supported", Q.pmProgressSupported());
     var fxCard = Q.state().cards.filter(function (c) { return c.projectId === fx.id && !c.milestone && (c.estimateHours || 0) > 0; })[0];
     var firstRule = Q.state().rulesOfCredit[0];
@@ -256,10 +285,6 @@
     check("global New Card button is limited to board/workspace execution views", Q.showNewCardButtonForView("dashboard", "") === false && Q.showNewCardButtonForView("board", "") === true && Q.showNewCardButtonForView("workspace", "Kanban") === true);
     var tempCoId = Q.createCORaw({ projectId: fx.id, number: "CO-QA", title: "QA attachment check", category: "Scope", requestedDate: "2026-07-08", status: "Requested", budgetDelta: 0, scheduleDeltaDays: 0, scopeItems: [] });
     check("change order attachment upload model tracks files", Q.attachChangeOrderFileRaw(tempCoId, { name: "CO-QA.pdf", size: 2048, dataUrl: "data:application/pdf;base64,QA==" }) === 1 && (Q.coById(tempCoId).attachments || [])[0].name === "CO-QA.pdf");
-    check("PM Ask can build project-specific profitability prompt", Q.buildProjectPromptContext(fx.id, "profitability", "How can this project be more profitable?").indexOf("improve profitability") !== -1);
-    check("PM Ask schedule focus includes project SPI context", Q.buildProjectPromptContext(fx.id, "schedule", "How can this project improve schedule?").indexOf("SPI:") !== -1);
-    check("PM Ask compliance focus states selected focus", Q.buildProjectPromptContext(fx.id, "compliance", "How can this project be more compliant?").indexOf("improve compliance posture") !== -1);
-    check("PM Ask prompt requires focus alignment and store grounding", Q.buildProjectPromptContext(fx.id, "profitability", "How can this project be more profitable?").indexOf("Expected response alignment") !== -1);
 
     /* ---- 4. Portfolio totals = Σ projects ---- */
     group("4 · Portfolio totals aggregate projects");
@@ -1026,7 +1051,7 @@
       check("Audit Trail is reachable from nav", nav.indexOf("audit") !== -1);
       check("portfolio Risk Register is reachable from nav", nav.indexOf("risks") !== -1);
       check("issues/decisions stay consolidated into Action Items", nav.indexOf("issues") === -1 && nav.indexOf("decisions") === -1 && nav.indexOf("actionitems") !== -1);
-      check("Procedure Library replaces the old PM Specialist label", nav.indexOf("pmspecialist") !== -1);
+      check("Procedure Library is gone with the vector store it administered", nav.indexOf("pmspecialist") === -1);
       check("every nav id has a view implementation", nav.every(function (id) { return Q.viewExists(id); }),
         nav.filter(function (id) { return !Q.viewExists(id); }).join(",") || "all present");
       check("no view implementation is unreachable", (function () {

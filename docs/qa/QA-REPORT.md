@@ -1,7 +1,7 @@
 # QA / QC Report — Techniek OpsBoard Pro V2
 
-**Version:** 5.0.0 · **Schema:** 5.0.0 · **Date:** 2026-07-27
-**Result:** ✅ **530 / 530 checks passed · 0 failures · 33 groups**
+**Version:** 5.2.0 · **Schema:** 5.0.0 · **Date:** 2026-07-27
+**Result:** ✅ **523 / 523 checks passed · 0 failures · 33 groups**
 **Run:** browser harness at `tests/qa.html`, verified live with zero console errors.
 
 ## Method
@@ -28,7 +28,7 @@ node scripts/build-knowledge.mjs   # corpus must be in sync with knowledge/*.md
 | 2 | Earned Value Management (BAC/PV/EV/AC/CV/SV/CPI/SPI/EAC) | 48 |
 | 3 | Resource utilization & allocation | 33 |
 | 3b | Resource administration model | 8 |
-| 3c | PM Specialist, procedure RAG, rules of credit | 30 |
+| 3c | Agent proxy, **vector-store removal**, rules of credit | 30 |
 | 4 | Portfolio totals aggregate projects | 5 |
 | 5 | PMI reactivity — card creation updates rollups + EVM | 3 |
 | 6 | PMI reactivity — card move to Done cascades everywhere | 7 |
@@ -54,7 +54,7 @@ node scripts/build-knowledge.mjs   # corpus must be in sync with knowledge/*.md
 | **17** | **Local PM knowledge base and finding playbooks** | **18** |
 | **18** | **Navigation completeness** | **7** |
 | **19** | **LLM layer — untrusted model output is contained** | **28** |
-| | **Total** | **530** |
+| | **Total** | **523** |
 
 Bold groups are new in V2.
 
@@ -98,9 +98,14 @@ Dark tokens are the default; Techniek corporate constants and the signature grad
 
 WCAG contrast verified computationally in the live browser against the computed custom properties, in both themes: **every checked pair ≥ 4.83:1** (AA for normal text). Light-theme status colors were darkened (`danger #b91c1c`, `warn #92400e`, `ok #166534`) after initial values measured 3.9–4.3 on their soft chips.
 
-## Known limitations
+### Vector-store removal (group 3c) — v5.2.0
+The external OpenAI vector-store RAG was removed. The suite proves it is **gone, not just hidden**: no nav entry, no registered `pmspecialist` view, no `vectorStoreFiles` / `sharePointProcedures` / `ragQueries` in state, no `openAiVectorStoreId` in settings, and a **real source grep** confirming `/api/vector-store`, `/api/file-search`, and `/api/sharepoint-registry` no longer appear in `app.js`.
 
-- The **external-vector-store** path (legacy, optional) remains unexercised — it needs an OpenAI key and a populated store. The local knowledge base covers that need without one.
+The migration is tested against a synthetic 5.1.0 workspace: the retired keys must be deleted **and** `agentEndpoint` must inherit the old `pmSpecialistEndpoint` value rather than silently resetting to the default. The first version of that fixture cloned current state, which already had `agentEndpoint`, so the migration guard correctly declined to fire — the fixture was wrong, not the code, and it now deletes the key to model a genuine 5.1.0 save.
+
+CI enforces the same rule independently: the build fails if any vector-store endpoint or `OPENAI_*` variable reappears.
+
+## Known limitations
 
 ### Live LLM verification — 2026-07-27
 Group 19 proves containment from stubbed output. The round-trip itself has now also been run against OpenRouter (`anthropic/claude-sonnet-5`):

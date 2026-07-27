@@ -4,9 +4,9 @@ A local PM corpus with ranked retrieval. **No API key, no network, works offline
 
 ## Why this rather than a hosted vector store
 
-The application inherited an OpenAI vector-store integration. It required a cloud account, a running proxy, per-query cost, and it sent project context off the machine — in a tool whose premise is local-first. For the core value it has been replaced by a corpus that ships with the app.
+The application inherited an OpenAI vector-store integration. It required a cloud account, a running proxy, per-query cost, and it sent project context off the machine — in a tool whose premise is local-first. It has been replaced by a corpus that ships with the app.
 
-The external path still exists as an explicitly optional escalation (**PM Advisor → Procedure Q&A → "Escalate to an external vector store"**), and the API key stays server-side when used.
+**The external path was removed entirely in v5.2.0**, along with its proxy endpoints and the Procedure Library admin view. It was the weaker half of a duplicated capability: the local corpus answers the same questions offline, and it returns cited passages rather than generated text, so it cannot hallucinate. Keeping a second, costlier path that could would have been a downgrade dressed as an option.
 
 ## How it works
 

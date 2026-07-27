@@ -586,38 +586,19 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .card-editor-compact #fRiskOrBlocker { min-height: 44px; }
 .card-editor-compact .mt { margin-top: 8px; }
 
-/* v3.7 PM Assistance output */
-.pm-assist-grid { align-items: start; }
-.pm-question { min-height: 118px; }
-.pm-output-panel { padding: 0; overflow: hidden; }
-.pm-brief { background: var(--surface); }
-.pm-brief-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px; background: linear-gradient(135deg, #003e9e, #0057d9); color: #fff; border-bottom: 3px solid; border-image: var(--tek-gradient) 1; }
-.pm-brief-head h2 { margin: 3px 0 5px; font-size: 18px; color: #fff; }
-.pm-brief-head p { margin: 0; color: rgba(255,255,255,.86); font-size: 13px; line-height: 1.35; }
+/* PM Assistance eyebrow — retained for the agent narrative header. The brief,
+   citation, and question styles were removed in v5.2.0 with the vector-store
+   RAG that rendered them. */
 .pm-eyebrow { font-size: 11px; letter-spacing: .8px; text-transform: uppercase; font-weight: 800; color: rgba(255,255,255,.78); }
-.pm-brief-body { padding: 16px 18px 6px; }
-.pm-brief-body h3 { margin: 14px 0 6px; font-size: 14px; color: var(--brand-strong); }
-.pm-brief-body p { margin: 0 0 9px; line-height: 1.45; }
-.pm-brief-body ul { margin: 0 0 10px 18px; padding: 0; }
-.pm-brief-body li { margin: 4px 0; line-height: 1.4; }
-.pm-citations { padding: 8px 18px 18px; }
-.pm-citations h3 { margin: 0 0 8px; font-size: 13px; color: var(--text-soft); }
-.pm-citation { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-top: 6px; background: var(--surface-2); }
-.pm-citation summary { cursor: pointer; padding: 8px 10px; font-weight: 700; color: var(--brand-strong); }
-.pm-citation-body { border-top: 1px solid var(--border); padding: 9px 10px; font-size: 12px; }
-.pm-citation-body p { margin: 6px 0 0; white-space: pre-wrap; }
 @media (max-width: 860px) {
   .card-editor-compact .form-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 640px) {
   .card-editor-compact .form-grid { grid-template-columns: 1fr; }
-  .pm-brief-head { flex-direction: column; }
 }
 
 
 /* v3.8 production polish */
-.vector-store-table-scroll { max-height: min(58vh, 620px); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.vector-store-table-scroll .table { margin-top: 0; min-width: 980px; }
 .pm-working { padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
 .pm-working-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .pm-working-head span { color: var(--text-soft); }

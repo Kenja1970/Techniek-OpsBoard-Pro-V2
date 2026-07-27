@@ -162,7 +162,7 @@ Rejections are **shown to you**, not swallowed. If the model is unsure it is ins
 Copy `server/.env.local.example` to `server/.env.local` and set `LLM_API_KEY` + `LLM_MODEL`. The endpoint is any OpenAI-compatible `/chat/completions` gateway — OpenRouter by default, or point `LLM_BASE_URL` at OpenAI or a local Ollama. **The key stays server-side; the browser never receives it.** Then:
 
 ```bash
-node server/pm-specialist-proxy.mjs
+node server/agent-proxy.mjs
 ```
 
 The UI only offers the AI buttons when `/health` reports a configured model, so the default experience never advertises something that will not work.

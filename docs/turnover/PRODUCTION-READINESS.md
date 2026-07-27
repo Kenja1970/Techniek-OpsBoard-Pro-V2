@@ -22,8 +22,8 @@ production · **P2** = class-above-Jira Kanban/PMI polish.
 |---|---|---|---|
 | 1 | **Authentication & authorization** | Local browser profiles; roles are advisory UI gates; any user can switch roles in the top bar. Register-level V15 boundaries are enforced in the UI as of v4.1.0 (Team Members read-only on Risks/Changes/Decisions) | Enterprise SSO (Entra ID per Techniek standard), server-side role enforcement, and per-record ownership ("edit **own** Issues" needs a user↔resource identity mapping) |
 | 2 | **Data at rest** | All workspace data in plaintext `localStorage`; optional passphrase gates the UI only, not the data | Server-side persistence with encryption at rest; remove the CUI/export-control exposure called out in the README warning |
-| 3 | **OpenAI key handling** | Key lives in `server/.env.local` on the host running the proxy | Rotate the current key before any wider distribution (it has lived on a workstation disk); move to a managed secret store; scope a service key to the vector-store use case |
-| 4 | **Proxy endpoint auth** | All proxy endpoints are unauthenticated; CORS pins the browser origin but any local process can call them | Add an auth token or session check to every `/api/*` route; rate-limit `/api/file-search` |
+| 3 | **LLM key handling** | Key lives in `server/.env.local` on the host running the proxy, gitignored and never sent to the browser | Rotate any key that has lived on a workstation disk before wider distribution; move to a managed secret store. Blast radius shrank in v5.2.0 — the proxy no longer holds an OpenAI account key with file-upload and vector-store-delete scope, only an inference key |
+| 4 | **Proxy endpoint auth** | Both endpoints (`/health`, `/api/agent`) are unauthenticated; CORS pins the browser origin but any local process can call them | Add an auth token or session check to `/api/agent`; rate-limit it. Surface shrank from seven endpoints to two in v5.2.0 |
 | 5 | **XSS audit** | Rendering is `innerHTML`-heavy; interpolated values go through `esc()` by convention | Systematic audit that every user-controlled string passes `esc()`; add a CSP header at the hosting layer; consider DOM-building over string HTML in editors |
 
 ## P1 — for multi-user production
@@ -59,9 +59,11 @@ production · **P2** = class-above-Jira Kanban/PMI polish.
   `applyCardMove()` with the human drag path on purpose. Do not add a second
   mutation route for it; that would let agent actions bypass WIP, evidence,
   dependency, and progress-mode gates.
-- **Optional external proxy** — the OpenAI vector-store path is an escalation,
-  not a dependency. Nothing in the default product path calls it, and the API
-  key must stay server-side.
+- **Optional agent proxy** — the LLM path is an enhancement, not a dependency.
+  Nothing in the default product path calls it, and the API key must stay
+  server-side. The proxy must remain **stateless and non-authoritative**: it
+  relays model output, and the client validates. Do not move a trust decision
+  into it.
 
 ## Suggested sequencing
 

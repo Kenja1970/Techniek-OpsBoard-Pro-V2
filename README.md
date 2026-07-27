@@ -4,7 +4,7 @@ A local-first **project delivery control center** for engineering work: Kanban e
 
 Zero dependencies, no build step, no account. Open `index.html` and it runs.
 
-![version](https://img.shields.io/badge/version-5.0.0-2f86ff) ![stack](https://img.shields.io/badge/stack-vanilla%20JS-f2c94c) ![build](https://img.shields.io/badge/build-none%20required-2ea043) ![qa](https://img.shields.io/badge/QA-530%2F530%20passing-2ea043) ![pm](https://img.shields.io/badge/PMI%2FPMBOK-EVM%20%C2%B7%20Change%20Control%20%C2%B7%20Risk-0057d9)
+![version](https://img.shields.io/badge/version-5.2.0-2f86ff) ![stack](https://img.shields.io/badge/stack-vanilla%20JS-f2c94c) ![build](https://img.shields.io/badge/build-none%20required-2ea043) ![qa](https://img.shields.io/badge/QA-523%2F523%20passing-2ea043) ![pm](https://img.shields.io/badge/PMI%2FPMBOK-EVM%20%C2%B7%20Change%20Control%20%C2%B7%20Risk-0057d9)
 
 > All seeded content is **fictional Techniek demo data**. Currency is **USD**, dates are US-formatted, and reporting follows **PMI / PMBOK** practice.
 
@@ -69,7 +69,7 @@ The part that matters: every document declares a dimension and trigger phrases, 
 node scripts/build-knowledge.mjs   # after editing knowledge/*.md
 ```
 
-An external OpenAI vector store remains available as a strictly **optional** escalation path via `server/pm-specialist-proxy.mjs`; the API key stays server-side and the browser never sees it.
+Procedure retrieval is entirely local — no key, no proxy, no network. The external OpenAI vector-store path was removed in v5.2.0; it needed a cloud account to answer questions this corpus already answers offline, with cited passages that cannot be hallucinated.
 
 ---
 
@@ -105,7 +105,7 @@ Financial visibility is limited to the four manager roles; master-resource admin
 
 The QA harness at [`tests/qa.html`](tests/qa.html) drives the **production** code paths through `window.TechniekOpsBoard._qa` and **independently re-derives every metric from raw data**, so a bug cannot hide behind the same bug in the test.
 
-**530 checks across 33 groups, all passing.** Report: [`docs/qa/QA-REPORT.md`](docs/qa/QA-REPORT.md).
+**523 checks across 33 groups, all passing.** Report: [`docs/qa/QA-REPORT.md`](docs/qa/QA-REPORT.md).
 
 ```bash
 node --check app.js && node --check tests/qa.js
@@ -129,8 +129,8 @@ index.html  styles.css  app.js        # the app
 assets/     knowledge-corpus.js       # generated PM corpus + logo/favicon
 knowledge/  *.md                      # authored knowledge (source of truth)
 scripts/    build-knowledge.mjs       # corpus compiler, QA runner, screenshots
-server/     pm-specialist-proxy.mjs   # OPTIONAL external vector-store proxy
-tests/      qa.html qa.js             # 530-check QA harness
+server/     agent-proxy.mjs           # OPTIONAL agent LLM proxy (/health, /api/agent)
+tests/      qa.html qa.js             # 523-check QA harness
 docs/                                 # architecture, data model, guides, QA
 ```
 

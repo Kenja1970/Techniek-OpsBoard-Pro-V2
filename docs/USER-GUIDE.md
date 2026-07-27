@@ -12,10 +12,11 @@
    work, with a deliberate WIP breach, aging cards, pending change orders,
    stale risks, and an over-allocated engineer — so PM Advisor has real
    findings to show.
-3. Nothing else is required. The PM knowledge base, PM Advisor, and PM Agent
-   all run locally with **no API key and no network**. The optional external
-   vector-store proxy (`node server/pm-specialist-proxy.mjs`) is only needed if
-   you want to escalate procedure questions to a hosted store.
+3. Nothing else is required. The PM knowledge base, PM Advisor, and PM Agent's
+   command mode all run locally with **no API key and no network**. The
+   optional agent proxy (`node server/agent-proxy.mjs`) is only needed if you
+   want the agent to interpret free-form requests the deterministic parser
+   cannot match, or to narrate findings.
 
 **Keyboard:** `/` search · `N` new card · `?` help · `Ctrl+Z / Ctrl+Shift+Z`
 undo/redo · `Esc` close modal.
@@ -146,12 +147,14 @@ Earned-credit schemas (steps summing to 100%). Applying a step to a card sets
 its physical percent complete and synchronizes logged hours. Schemas are
 sortable by usage on the selected project.
 
-### PM Specialist
-Procedure-aware PM assistance grounded exclusively in the configured OpenAI
-vector store — if the store lacks support, it says so rather than guessing.
-Tabs: **Ask** (project-context questions, Techniek-branded copy-ready briefs
-with citations), **Vector Store** (list/upload/attach/delete store files),
-**SharePoint Check** (procedure revision freshness). Requires the local proxy.
+### Procedure Q&A
+Lives in **PM Advisor → Procedure Q&A**. Ranked BM25 retrieval over the local
+corpus in `knowledge/`, returning **cited passages, never generated text** — so
+it cannot invent guidance. No key, no proxy, works offline.
+
+*(The former standalone **PM Specialist** / **Procedure Library** view and its
+OpenAI vector store were removed in v5.2.0. The procedures themselves were
+never in the store; they are markdown files you can read, diff, and extend.)*
 
 ### Manager Report
 Executive portfolio report: workflow summaries, financial posture, EVM,
@@ -159,8 +162,8 @@ governance counts. Print to PDF from the browser.
 
 ### Settings / Data
 Role/theme preferences, target contribution margin *(finance roles)*, Kanban
-auto-progress toggle, WIP policy *(edit roles only)*, PM Specialist
-endpoint/vector-store configuration, Microsoft Fabric connector link
+auto-progress toggle, WIP policy *(edit roles only)*, optional agent-proxy
+endpoint, Microsoft Fabric connector link
 (Admin-editable), JSON export/import of the whole workspace, and demo-data
 reset.
 

@@ -18,7 +18,7 @@
   var PRODUCT_NAME = "Techniek OpsBoard Pro V2";
   var PRODUCT_SHORT = "OpsBoard V2";
   var SCHEMA_VERSION = "5.0.0";
-  var APP_VERSION = "5.1.0";
+  var APP_VERSION = "5.2.0";
   // Kanban WIP policy: "hard" blocks pulls that would exceed a stage limit (Anderson / LeanKanban).
   // "soft" warns only (legacy demo behavior). Production default is hard.
   var WIP_POLICIES = ["hard", "soft"];
@@ -26,10 +26,9 @@
   var ORG_UNITS = ["Techniek-Engineering", "Techniek-Controls", "Techniek-Digital", "Techniek-Field", "Techniek-BD", "Techniek-Corporate"];
   var DEFAULT_ORG_UNIT = "Techniek-Engineering";
 
-  // Optional OpenAI vector store for the PM Specialist procedure library.
-  // Empty by default — configure per-deployment in Settings / Data.
-  var OPENAI_VECTOR_STORE_ID = "";
-  var PM_SPECIALIST_PROXY_DEFAULT = "http://127.0.0.1:8787";
+  // Local proxy for the optional AI agent. Procedures themselves are answered
+  // from the bundled corpus in-browser and need no endpoint at all.
+  var AGENT_PROXY_DEFAULT = "http://127.0.0.1:8787";
 
   // PMI integrated change control.
   var CO_CATEGORIES = ["Scope", "Budget", "Schedule", "Quality", "Resource", "Other"];
@@ -107,7 +106,6 @@
     { id: "actionitems", label: "Action Items", ico: "A" },
     { id: "risks", label: "Risk Register", ico: "!" },
     { id: "rulescredit", label: "Rules of Credit", ico: "%" },
-    { id: "pmspecialist", label: "Procedure Library", ico: "L" },
     { id: "reports", label: "Manager Report", ico: "R" },
     { id: "client", label: "Client Report", ico: "B" },
     { id: "audit", label: "Audit Trail", ico: "T" },
@@ -609,14 +607,11 @@
       auditTrail: auditTrail,
       integrationSettings: integrationSettings,
       rulesOfCredit: buildDefaultRulesOfCredit(),
-      sharePointProcedures: buildDefaultSharePointProcedures(),
       pmDeliverables: [],
-      ragQueries: [],
-      vectorStoreFiles: [],
       wbsElements: wbsElements,
       knowledgeDocs: [],
       history: buildInitialHistory(boards, cards),
-      settings: { role: "Department Manager", theme: "dark", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", pmSpecialistEndpoint: PM_SPECIALIST_PROXY_DEFAULT, openAiVectorStoreId: OPENAI_VECTOR_STORE_ID },
+      settings: { role: "Department Manager", theme: "dark", compact: false, targetContributionMarginPct: DEFAULT_TARGET_CM_PCT, autoProgressFromKanban: true, wipPolicy: "hard", apiEndpoint: "", apiKey: "", agentEndpoint: AGENT_PROXY_DEFAULT },
     };
 
     tuneDemoTargets(ws);
@@ -739,8 +734,12 @@
     if (ws.settings.compact == null) ws.settings.compact = false;
     if (ws.settings.targetContributionMarginPct == null) ws.settings.targetContributionMarginPct = DEFAULT_TARGET_CM_PCT;
     if (!ws.settings.apiEndpoint) ws.settings.apiEndpoint = "";
-    if (!ws.settings.pmSpecialistEndpoint) ws.settings.pmSpecialistEndpoint = PM_SPECIALIST_PROXY_DEFAULT;
-    if (!ws.settings.openAiVectorStoreId) ws.settings.openAiVectorStoreId = OPENAI_VECTOR_STORE_ID;
+    // v5.2.0 removed the external vector-store RAG. Carry the old proxy setting
+    // forward under its new name, then drop the retired keys so a stale vector
+    // store id cannot linger in a saved workspace.
+    if (!ws.settings.agentEndpoint) ws.settings.agentEndpoint = ws.settings.pmSpecialistEndpoint || AGENT_PROXY_DEFAULT;
+    delete ws.settings.pmSpecialistEndpoint;
+    delete ws.settings.openAiVectorStoreId;
     if (ws.settings.apiKey && /^sk-/.test(String(ws.settings.apiKey))) ws.settings.apiKey = "";
     if (!ws.settings.apiKey) ws.settings.apiKey = "";
     if (!ws.history) ws.history = buildInitialHistory(ws.boards, ws.cards);
@@ -759,11 +758,12 @@
     if (!ws.imports) ws.imports = [];
     if (!ws.auditTrail) ws.auditTrail = [];
     if (!ws.rulesOfCredit) ws.rulesOfCredit = buildDefaultRulesOfCredit();
-    if (!ws.sharePointProcedures) ws.sharePointProcedures = buildDefaultSharePointProcedures();
     if (!ws.pmDeliverables) ws.pmDeliverables = [];
-    if (!ws.ragQueries) ws.ragQueries = [];
-    if (!ws.vectorStoreFiles) ws.vectorStoreFiles = [];
     if (!ws.wbsElements) ws.wbsElements = [];
+    // Retired with the vector-store RAG — removed rather than left orphaned.
+    delete ws.sharePointProcedures;
+    delete ws.ragQueries;
+    delete ws.vectorStoreFiles;
     if (!ws.integrationSettings) ws.integrationSettings = { unanetEndpoint: "", ermasEndpoint: "", powerBiWorkspace: "", fabricErmasAccountingUrl: "", sharePointRoot: "", teamsTemplate: "", apiEndpoint: ws.settings.apiEndpoint || "", apiKey: "" };
     if (ws.integrationSettings && ws.integrationSettings.fabricErmasAccountingUrl == null) ws.integrationSettings.fabricErmasAccountingUrl = "";
     if (ws.integrationSettings && /^sk-/.test(String(ws.integrationSettings.apiKey || ""))) ws.integrationSettings.apiKey = "";
@@ -1509,24 +1509,7 @@
       ]),
     ];
   }
-  function buildDefaultSharePointProcedures() {
-    return [
-      { id: uid("sp"), title: "PM Specialist procedure registry", sharePointUrl: "", procedureVersion: "Pending", vectorFileId: "", vectorVersion: "Pending", sourceHash: "", lastChecked: "", owner: "PMO", status: "Needs source", notes: "Register SharePoint source URL and approved revision before production use." },
-      { id: uid("sp"), title: "Rules of Credit — Techniek PMO standard", sharePointUrl: "", procedureVersion: "Rev 0", vectorFileId: "", vectorVersion: "", sourceHash: "", lastChecked: todayISO(), owner: "PMO", status: "Needs version", notes: "Built-in default schemas. Register the controlled procedure before production use." },
-    ];
-  }
-  function pmProxyBase() { return String(state.settings.pmSpecialistEndpoint || PM_SPECIALIST_PROXY_DEFAULT).replace(/\/+$/, ""); }
-  function pmVectorStoreId() { return state.settings.openAiVectorStoreId || OPENAI_VECTOR_STORE_ID; }
-  function secretWarning() { return "OpenAI API keys are not stored in browser localStorage. Use server/.env.local with the local proxy."; }
-  function procedureVersionStatus(p) {
-    if (!p.sharePointUrl || !p.vectorFileId) return "Needs source";
-    if (!p.procedureVersion || !p.vectorVersion) return "Needs version";
-    if (String(p.procedureVersion).trim() !== String(p.vectorVersion).trim()) return "Outdated";
-    return "Current";
-  }
-  function refreshProcedureStatuses() {
-    (state.sharePointProcedures || []).forEach(function (p) { p.status = procedureVersionStatus(p); p.lastChecked = todayISO(); });
-  }
+  function secretWarning() { return "API keys are never stored in browser localStorage. The optional agent proxy reads its key from server/.env.local, server-side only."; }
   function rulesOfCreditValidation() {
     return (state.rulesOfCredit || []).map(function (r) {
       var total = (r.steps || []).reduce(function (a, s) { return a + normHours(s.incrementPct); }, 0);
@@ -1550,9 +1533,6 @@
     state.cards.forEach(function (c) { if (c.ruleOfCreditId === ruleId) c.ruleOfCreditId = ""; });
     recordAudit("Rule of Credit", ruleId, "Rule deleted", r.name);
     return 1;
-  }
-  function vectorStoreFileName(f) {
-    return f.filename || (f.file && f.file.filename) || (f.attributes && (f.attributes.title || f.attributes.filename || f.attributes.procedureVersion)) || f.file_id || f.id || "";
   }
   function latestFundingValue(p) {
     var profile = (p && p.fundingProfile) || [];
@@ -1584,19 +1564,10 @@
     var hits = [];
     function add(kind, title, text) { if (!q || (String(kind + " " + title + " " + text).toLowerCase().indexOf(q) !== -1)) hits.push({ kind: kind, title: title, text: text }); }
     (state.rulesOfCredit || []).forEach(function (r) { add("Rule of Credit", r.name, (r.steps || []).map(function (s) { return s.reportedOutPct + "%: " + s.description; }).join(" | ")); });
-    (state.sharePointProcedures || []).forEach(function (p) { add("Procedure", p.title, p.status + " " + p.procedureVersion + " " + p.notes); });
     (state.wbsElements || []).forEach(function (w) { add("WBS element", w.wbsCode + " " + w.title, (w.parentWbsCode || "") + " " + (w.sourceBasis || "")); });
     state.cards.slice(0, 300).forEach(function (c) { add("Work item", c.title, (c.desc || "") + " " + cardWbsCode(c) + " " + (c.scheduleTitle || "") + " " + (c.sourceBasis || "")); });
     return hits.slice(0, 24);
   }
-  async function pmProxyJson(path, options) {
-    var res = await fetch(pmProxyBase() + path, options || {});
-    var text = await res.text();
-    var data = text ? JSON.parse(text) : {};
-    if (!res.ok) throw new Error(data.error || res.statusText || "PM Specialist proxy error");
-    return data;
-  }
-
   /* ----------------------------------------------------------------------- *
    * Calculations
    * ----------------------------------------------------------------------- */
@@ -2730,7 +2701,7 @@
     return { actions: out, rejected: rejected };
   }
 
-  function agentProxyBase() { return String(state.settings.pmSpecialistEndpoint || PM_SPECIALIST_PROXY_DEFAULT).replace(/\/+$/, ""); }
+  function agentProxyBase() { return String(state.settings.agentEndpoint || AGENT_PROXY_DEFAULT).replace(/\/+$/, ""); }
   async function agentLlmHealth() {
     try {
       var res = await fetch(agentProxyBase() + "/health");
@@ -3014,7 +2985,7 @@
     });
     root.appendChild(tabbar);
     if (tab === "Ask & Act") return renderAgentConsole(root);
-    if (tab === "Procedure Q&A") return renderPmAsk(root);
+    if (tab === "Procedure Q&A") return renderKnowledgeAnswer(root);
     var F = advisorFindings();
     var H = advisorHealth(F);
 
@@ -5441,40 +5412,6 @@
   };
 
 
-  /* ---------- PM Specialist ---------- */
-  // Procedure Library = the ADMIN half of the old PM Specialist. The manager-facing
-  // "Ask" surface moved into PM Advisor (Procedure Q&A tab), where procedure
-  // guidance sits next to the findings it explains and the agent that can act on
-  // them. Vector-store and SharePoint freshness are configuration, not advice, so
-  // they stay here.
-  VIEWS.pmspecialist = function (root) {
-    var active = ui.pmSpecialistTab === "SharePoint Check" ? "SharePoint Check" : "Vector Store";
-    root.appendChild(pageHead("Procedure Library", "Administer the procedure corpus behind the PM Advisor's Procedure Q&A: vector-store contents and SharePoint revision freshness."));
-    if (role() === "Viewer") root.appendChild(el("div", { class: "warn-banner mb" }, "Viewer role can review procedure records but cannot change them."));
-    root.appendChild(el("div", { class: "hint mb" }, "Looking for procedure-grounded answers? They now live in PM Advisor → Procedure Q&A."));
-    var tabs = ["Vector Store", "SharePoint Check"];
-    var tabbar = el("div", { class: "flex wrap mb" });
-    tabs.forEach(function (t) { var b = el("button", { class: "btn sm" + (active === t ? " primary" : " ghost") }, t); b.addEventListener("click", function () { ui.pmSpecialistTab = t; render(); }); tabbar.appendChild(b); });
-    root.appendChild(tabbar);
-    if (active === "Vector Store") renderVectorStore(root);
-    else renderSharePointCheck(root);
-  };
-  function pmCitationText(h) {
-    if (!h) return "";
-    if (typeof h.text === "string") return h.text;
-    if (typeof h.content === "string") return h.content;
-    if (Array.isArray(h.content)) return h.content.map(function (x) { return x.text || x.content || ""; }).join("\n");
-    return h.snippet || h.quote || "";
-  }
-  function pmCitationLabel(h, i) {
-    var name = h.filename || h.title || h.file_name || h.file_id || h.id || "Vector store result";
-    return "Source " + (i + 1) + " - " + name;
-  }
-  function pmAnswerSummary(answer) {
-    var text = String(answer || "").trim();
-    if (!text) return "No PM Assistance response has been generated.";
-    return text.split(/\n+/).filter(Boolean).slice(0, 2).join(" ");
-  }
   function appendPmFormattedText(host, text) {
     var lines = String(text || "").split(/\r?\n/);
     var list = null;
@@ -5493,70 +5430,6 @@
       closeList();
       host.appendChild(el("p", null, esc(line)));
     });
-  }
-  function pmCopyText(answer, hits) {
-    var src = (hits || []).map(function (h, i) { return "[" + (i + 1) + "] " + pmCitationLabel(h, i) + (h.file_id ? " (" + h.file_id + ")" : ""); }).join("\n");
-    return "Techniek PM Assistance\n\n" + String(answer || "").trim() + (src ? "\n\nSources\n" + src : "");
-  }
-  function renderPmBrief(answer, hits) {
-    var wrap = el("div", { class: "pm-brief" });
-    var head = el("div", { class: "pm-brief-head" });
-    head.appendChild(el("div", null, "<div class='pm-eyebrow'>Techniek PM Assistance</div><h2>Procedure-backed PM brief</h2><p>" + esc(pmAnswerSummary(answer)) + "</p>"));
-    var copy = el("button", { class: "btn sm primary" }, "Copy brief");
-    copy.addEventListener("click", function () {
-      var text = pmCopyText(answer, hits);
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { toast("PM Assistance brief copied", "ok"); }).catch(function () { toast("Copy failed; select the brief text manually", "err"); });
-      else toast("Clipboard is unavailable; select the brief text manually", "err");
-    });
-    head.appendChild(copy);
-    wrap.appendChild(head);
-    var body = el("div", { class: "pm-brief-body" });
-    appendPmFormattedText(body, answer || "No PM Assistance query has been run in this session.");
-    wrap.appendChild(body);
-    if ((hits || []).length) {
-      var citeWrap = el("div", { class: "pm-citations" });
-      citeWrap.appendChild(el("h3", null, "Sources"));
-      hits.forEach(function (h, i) {
-        var detail = el("details", { class: "pm-citation" });
-        detail.appendChild(el("summary", null, esc(pmCitationLabel(h, i))));
-        detail.appendChild(el("div", { class: "pm-citation-body" }, "<div class='muted'>" + esc(h.file_id || h.id || "") + "</div><p>" + esc(pmCitationText(h) || "No extract text returned by file search.") + "</p>"));
-        citeWrap.appendChild(detail);
-      });
-      wrap.appendChild(citeWrap);
-    }
-    return wrap;
-  }
-
-  function pmFocusLabel(focus) {
-    if (focus === "profitability") return "improve profitability / contribution margin";
-    if (focus === "schedule") return "improve schedule performance";
-    if (focus === "compliance") return "improve compliance posture";
-    return "general PM support";
-  }
-  function buildProjectPromptContext(projectId, focus, question) {
-    var p = projectById(projectId);
-    if (!p) return String(question || "");
-    var r = projectRollup(p), v = projectEVM(p);
-    var openRisks = (state.risks || []).filter(function (rk) { return rk.projectId === p.id && rk.status !== "Closed"; }).slice(0, 5);
-    var openActions = (state.actionItems || []).filter(function (a) { return a.projectId === p.id && a.status !== "Closed"; }).slice(0, 5);
-    var cards = state.cards.filter(function (c) { return c.projectId === p.id; });
-    return [
-      "Project-specific PM Specialist request.",
-      "Use the retrieved procedure/vector-store content as the governing basis. Treat the project facts below as user-provided context for applying those procedures.",
-      "Focus: " + pmFocusLabel(focus),
-      "Project: " + p.name + " (" + (p.unanetProjectCode || p.id) + ")",
-      "Client: " + (p.client || "not specified"),
-      "Billing type: " + projectBillingType(p),
-      "Contract value/funded value: " + money(contractValue(p)),
-      "Progress: " + pct(r.progress),
-      "Contribution margin: " + pctRatio(r.contributionMargin) + "; multiplier: " + fmtMultiplier(projectMultiplier(r)),
-      "CPI: " + num2(v.cpi) + "; SPI: " + num2(v.spi) + "; EAC: " + money(v.eac),
-      "Open work items: " + cards.filter(function (c) { return !isDone(c); }).length + " of " + cards.length,
-      "Open risks: " + openRisks.map(function (rk) { return rk.title; }).join(" | "),
-      "Open action items: " + openActions.map(function (a) { return a.title; }).join(" | "),
-      "Expected response alignment: answer the selected focus directly, apply only retrieved procedure/vector-store guidance to the project facts above, and state when the store does not support a recommendation.",
-      "Question: " + String(question || "").trim()
-    ].join("\n");
   }
 
   // Local-first procedure answers: ranked retrieval over the bundled PM corpus
@@ -5624,162 +5497,6 @@
     t.appendChild(tb); libr.appendChild(t); root.appendChild(libr);
   }
 
-  function renderPmAsk(root) {
-    renderKnowledgeAnswer(root);
-    // Optional cloud escalation. Everything above works without it.
-    var optional = el("details", { class: "panel panel-pad mt" });
-    optional.innerHTML = "<summary><strong>Optional: escalate to an external vector store</strong></summary>";
-    var wrap = el("div", { class: "mt" });
-    optional.appendChild(wrap);
-    root.appendChild(optional);
-    root = wrap;
-    var grid = el("div", { class: "grid cols-2 pm-assist-grid" });
-    var panel = el("div", { class: "panel panel-pad" });
-    panel.appendChild(el("h2", null, "Ask an external procedure store"));
-    panel.appendChild(el("p", { class: "muted" }, "Not required — the local corpus above answers offline. This path sends the question to an OpenAI vector store through the local proxy at " + esc(pmProxyBase()) + ", which needs a running proxy and an API key held server-side. If the answer is not supported by retrieved store files it will say so rather than using general knowledge."));
-    var contextGrid = el("div", { class: "form-grid" });
-    contextGrid.innerHTML = "<div class='form-row'><label class='field-label inline'>Project context</label><select class='select' id='pmAskProject'><option value=''>No specific project</option>" + state.projects.map(function (p) { return "<option value='" + p.id + "'" + (ui.pmAskProjectId === p.id ? " selected" : "") + ">" + esc(p.name) + "</option>"; }).join("") + "</select></div>" +
-      "<div class='form-row'><label class='field-label inline'>Question focus</label><select class='select' id='pmAskFocus'><option value='general'>General PM support</option><option value='profitability'>More profitable</option><option value='schedule'>Improve schedule</option><option value='compliance'>More compliant</option></select></div>";
-    panel.appendChild(contextGrid);
-    setTimeout(function () { var f = $("#pmAskFocus"); if (f && ui.pmAskFocus) f.value = ui.pmAskFocus; }, 0);
-    var q = el("textarea", { class: "textarea pm-question", id: "pmQuestion", placeholder: "Ask for a procedure-backed recommendation, action plan, control check, or project-management draft..." });
-    q.value = ui.pmQuestionDraft || "";
-    q.addEventListener("input", function () { ui.pmQuestionDraft = q.value; });
-    panel.appendChild(q);
-    var row = el("div", { class: "flex wrap mt" });
-    row.appendChild(mkBtn("Ask", "btn primary", async function () {
-      var question = q.value.trim(); if (!question) return toast("Enter a PM Specialist question", "err");
-      var projectId = $("#pmAskProject") ? $("#pmAskProject").value : "";
-      var focus = $("#pmAskFocus") ? $("#pmAskFocus").value : "general";
-      ui.pmQuestionDraft = question;
-      ui.pmAskProjectId = projectId;
-      ui.pmAskFocus = focus;
-      var promptedQuestion = projectId ? buildProjectPromptContext(projectId, focus, question) : question;
-      ui.pmWorking = true;
-      ui.pmAnswer = "Searching the configured procedure store and preparing a procedure-backed answer...";
-      ui.pmHits = [];
-      render();
-      try {
-        var data = await pmProxyJson("/api/file-search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: promptedQuestion, vectorStoreId: pmVectorStoreId(), maxResults: 10 }) });
-        ui.pmHits = data.results || [];
-        ui.pmAnswer = ui.pmHits.length ? (data.outputText || data.answer || JSON.stringify(data, null, 2)) : "The answer is not available in the PM Specialist procedure store.";
-        mutate(function () { state.ragQueries.push({ id: uid("rag"), ts: Date.now(), question: question, projectId: projectId, focus: focus, source: "OpenAI file_search", vectorStoreId: pmVectorStoreId() }); });
-      } catch (e) {
-        ui.pmAnswer = "PM Specialist could not answer because vector-store search is unavailable: " + (e.message || e);
-        ui.pmHits = [];
-      } finally {
-        ui.pmWorking = false;
-        render();
-      }
-    }));
-    panel.appendChild(row); grid.appendChild(panel);
-    var out = el("div", { class: "panel panel-pad pm-output-panel" });
-    if (ui.pmWorking) out.appendChild(el("div", { class: "pm-working" }, "<div class='pm-working-head'><strong>PM Assistance is working</strong><span>Searching vector store, checking support, and formatting the brief.</span></div><div class='pm-progress'><span></span></div>"));
-    out.appendChild(renderPmBrief(ui.pmAnswer || "No PM Assistance query has been run in this session.", ui.pmHits || []));
-    grid.appendChild(out); root.appendChild(grid);
-  }
-  async function refreshVectorStoreFiles(silent) {
-    var data = await pmProxyJson("/api/vector-store/files?all=1&limit=100&vectorStoreId=" + encodeURIComponent(pmVectorStoreId()));
-    var files = data.data || data.files || [];
-    ui.vectorStoreFileCount = data.count || files.length;
-    ui.vectorStoreFileComplete = data.complete !== false;
-    mutate(function () { state.vectorStoreFiles = files; });
-    if (!silent) toast("Vector store file list refreshed: " + files.length + " file" + (files.length === 1 ? "" : "s"), "ok");
-    return files;
-  }
-  function renderVectorStore(root) {
-    var panel = el("div", { class: "panel panel-pad" });
-    panel.appendChild(el("h2", null, "OpenAI vector store"));
-    panel.appendChild(el("p", { class: "muted" }, secretWarning() + " File list/add/delete calls go through the local proxy."));
-    var cfg = el("div", { class: "grid cols-3" });
-    cfg.innerHTML = statCardHTML("Vector store", esc(pmVectorStoreId()), "configured id") + statCardHTML("Proxy", esc(pmProxyBase()), "local backend") + statCardHTML("Cached files", ui.vectorStoreFileCount || (state.vectorStoreFiles || []).length, (ui.vectorStoreFileComplete === false ? "partial refresh" : "full refresh"));
-    panel.appendChild(cfg);
-    var row = el("div", { class: "flex wrap mt" });
-    row.appendChild(mkBtn("Refresh files", "btn primary", async function () { try { await refreshVectorStoreFiles(false); } catch (e) { toast(e.message, "err"); } }));
-    row.appendChild(mkBtn("Attach by file ID", "btn", function () { attachVectorFileModal(); }));
-    row.appendChild(mkBtn("Upload files", "btn", function () { uploadVectorFilePrompt(); }));
-    panel.appendChild(row);
-    var files = state.vectorStoreFiles || [];
-    var table = el("table", { class: "table mt" });
-    table.innerHTML = "<thead><tr><th>File name</th><th>OpenAI file ID</th><th>Status</th><th class='num'>Size / usage</th><th>Purpose</th><th>Last error</th><th></th></tr></thead>";
-    var tb = el("tbody");
-    files.forEach(function (f) {
-      var tr = el("tr");
-      tr.innerHTML = "<td><strong>" + esc(vectorStoreFileName(f) || "-") + "</strong><div class='muted'>" + esc(f.attributes && (f.attributes.title || f.attributes.source) || "") + "</div></td><td><code>" + esc(f.file_id || f.id || "") + "</code></td><td><span class='badge " + (f.status === "completed" ? "ok" : f.status === "failed" ? "danger" : "warn") + "'>" + esc(f.status || "unknown") + "</span></td><td class='num'>" + esc(f.bytes || f.usage_bytes || 0) + "</td><td class='muted'>" + esc(f.purpose || "") + "</td><td class='muted'>" + esc(f.last_error ? f.last_error.message || f.last_error.code : (f.file_metadata_error || "")) + "</td><td class='right'></td>";
-      var del = el("button", { class: "btn sm danger" }, "Delete");
-      del.addEventListener("click", function () {
-        var fid = f.id || f.file_id;
-        confirmModal("Delete vector-store file?", "Removes " + fid + " from the external vector store. This cannot be undone from here.", async function () {
-          try {
-            await pmProxyJson("/api/vector-store/files/" + encodeURIComponent(fid) + "?vectorStoreId=" + encodeURIComponent(pmVectorStoreId()), { method: "DELETE" });
-            mutate(function () { state.vectorStoreFiles = (state.vectorStoreFiles || []).filter(function (x) { return (x.id || x.file_id) !== fid; }); });
-            toast("Vector store file deleted", "ok");
-          } catch (e) { toast(e.message, "err"); }
-        });
-      });
-      tr.querySelector("td.right").appendChild(del); tb.appendChild(tr);
-    });
-    if (!files.length) tb.appendChild(el("tr", null, "<td colspan='7' class='empty'>No vector-store files cached. Start the local proxy and refresh.</td>"));
-    table.appendChild(tb);
-    var scroll = el("div", { class: "vector-store-table-scroll table-wrap mt" });
-    scroll.appendChild(table);
-    panel.appendChild(scroll);
-    root.appendChild(panel);
-  }
-  function attachVectorFileModal() {
-    var body = el("div");
-    body.innerHTML = "<label class='field-label'>OpenAI file ID</label><input id='vsFileId' class='input' placeholder='file-...' />" +
-      "<label class='field-label mt'>Procedure title / version metadata</label><input id='vsTitle' class='input' placeholder='Procedure name or revision' />";
-    modal("Attach existing OpenAI file", body, [{ label: "Cancel", cls: "btn", fn: closeModal }, { label: "Attach", cls: "btn primary", fn: async function () { var id = $("#vsFileId").value.trim(); if (!id) return toast("File ID required", "err"); try { await pmProxyJson("/api/vector-store/files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vectorStoreId: pmVectorStoreId(), file_id: id, attributes: { title: $("#vsTitle").value.trim(), source: "OpsBoard PM Specialist" } }) }); await refreshVectorStoreFiles(true); closeModal(); toast("File attached to vector store", "ok"); } catch (e) { toast(e.message, "err"); } } }], "sm");
-  }
-  async function uploadVectorFile(file) {
-    var fd = new FormData();
-    fd.append("file", file);
-    fd.append("vectorStoreId", pmVectorStoreId());
-    return fetch(pmProxyBase() + "/api/vector-store/upload", { method: "POST", body: fd }).then(async function (r) {
-      var t = await r.text();
-      var d = t ? JSON.parse(t) : {};
-      if (!r.ok) throw new Error(d.error || r.statusText);
-      return d;
-    });
-  }
-  function uploadVectorFilePrompt() {
-    var input = el("input", { type: "file", multiple: "multiple", accept: ".pdf,.doc,.docx,.txt,.md,.pptx,.json,.csv,.html,.js,.py" });
-    input.addEventListener("change", async function () {
-      var files = [].slice.call(input.files || []);
-      if (!files.length) return;
-      var ok = 0, failed = [];
-      for (var i = 0; i < files.length; i++) {
-        try { await uploadVectorFile(files[i]); ok++; }
-        catch (e) { failed.push(files[i].name + ": " + (e.message || e)); }
-      }
-      try { await refreshVectorStoreFiles(true); } catch (e2) {}
-      if (failed.length) toast(ok + " uploaded; " + failed.length + " failed", "err");
-      else toast(ok + " file" + (ok === 1 ? "" : "s") + " uploaded and attached", "ok");
-    });
-    input.click();
-  }
-  function renderSharePointCheck(root) {
-    var panel = el("div", { class: "panel panel-pad" });
-    panel.appendChild(el("h2", null, "SharePoint procedure version check"));
-    panel.appendChild(el("p", { class: "muted" }, "Phase 1 uses a manager-maintained procedure registry. Production SharePoint/Graph checks require enterprise auth and site/library configuration."));
-    var row = el("div", { class: "flex wrap mt" });
-    row.appendChild(mkBtn("Run version check", "btn primary", function () { mutate(refreshProcedureStatuses); toast("Procedure statuses refreshed", "ok"); }));
-    row.appendChild(mkBtn("Add procedure", "btn", function () { procedureModal(); }));
-    panel.appendChild(row);
-    var table = el("table", { class: "table mt" });
-    table.innerHTML = "<thead><tr><th>Procedure</th><th>SharePoint rev</th><th>Vector rev</th><th>Vector file</th><th>Status</th><th></th></tr></thead>";
-    var tb = el("tbody");
-    (state.sharePointProcedures || []).forEach(function (p) { var cls = p.status === "Current" ? "ok" : p.status === "Outdated" ? "danger" : "warn"; var tr = el("tr", null, "<td><strong>" + esc(p.title) + "</strong><div class='muted'>" + esc(p.sharePointUrl || p.notes || "") + "</div></td><td>" + esc(p.procedureVersion || "") + "</td><td>" + esc(p.vectorVersion || "") + "</td><td>" + esc(p.vectorFileId || "") + "</td><td><span class='badge " + cls + "'>" + esc(p.status || procedureVersionStatus(p)) + "</span></td><td class='right'></td>"); var edit = el("button", { class: "btn sm" }, "Edit"); edit.addEventListener("click", function () { procedureModal(p); }); tr.querySelector("td.right").appendChild(edit); tb.appendChild(tr); });
-    table.appendChild(tb); panel.appendChild(table); root.appendChild(panel);
-  }
-  function procedureModal(existing) {
-    if (!canEdit()) return toast("Viewer role is read-only", "err");
-    var p = existing || { id: uid("sp"), title: "", sharePointUrl: "", procedureVersion: "", vectorFileId: "", vectorVersion: "", sourceHash: "", owner: "PMO", notes: "" };
-    var body = el("div");
-    body.innerHTML = ["title|Title", "sharePointUrl|SharePoint URL", "procedureVersion|SharePoint version", "vectorFileId|Vector file ID", "vectorVersion|Vector version", "sourceHash|Source hash", "owner|Owner", "notes|Notes"].map(function (x) { var a = x.split("|"); return "<label class='field-label'>" + a[1] + "</label><input class='input mb' id='sp_" + a[0] + "' value='" + esc(p[a[0]] || "") + "' />"; }).join("");
-    modal(existing ? "Edit procedure" : "Add procedure", body, [{ label: "Cancel", cls: "btn", fn: closeModal }, { label: "Save", cls: "btn primary", fn: function () { mutate(function () { ["title", "sharePointUrl", "procedureVersion", "vectorFileId", "vectorVersion", "sourceHash", "owner", "notes"].forEach(function (k) { p[k] = $("#sp_" + k).value.trim(); }); p.status = procedureVersionStatus(p); p.lastChecked = todayISO(); if (!existing) state.sharePointProcedures.push(p); recordAudit("Procedure", p.id, existing ? "Procedure updated" : "Procedure added", p.title); }); closeModal(); toast("Procedure saved", "ok"); } }], "sm");
-  }
   function renderDeliverableWbsWorkflow(root) {
     var p = projectById(ui.rulesProjectId) || state.projects[0];
     ui.rulesProjectId = p && p.id;
@@ -6062,18 +5779,12 @@
       epRow.appendChild(ep);
       apiPanel.appendChild(epRow);
       var pmRow = el("div", { class: "form-row mt" });
-      pmRow.innerHTML = "<label class='field-label inline'>PM Specialist proxy</label>";
-      var pmEp = el("input", { class: "input", placeholder: PM_SPECIALIST_PROXY_DEFAULT, value: state.settings.pmSpecialistEndpoint || PM_SPECIALIST_PROXY_DEFAULT });
-      pmEp.addEventListener("change", function () { mutate(function () { state.settings.pmSpecialistEndpoint = pmEp.value.trim() || PM_SPECIALIST_PROXY_DEFAULT; }); });
+      pmRow.innerHTML = "<label class='field-label inline'>Agent proxy</label>";
+      var pmEp = el("input", { class: "input", placeholder: AGENT_PROXY_DEFAULT, value: state.settings.agentEndpoint || AGENT_PROXY_DEFAULT });
+      pmEp.addEventListener("change", function () { mutate(function () { state.settings.agentEndpoint = pmEp.value.trim() || AGENT_PROXY_DEFAULT; }); });
       pmRow.appendChild(pmEp);
       apiPanel.appendChild(pmRow);
-      var vsRow = el("div", { class: "form-row mt" });
-      vsRow.innerHTML = "<label class='field-label inline'>OpenAI vector store ID</label>";
-      var vs = el("input", { class: "input", value: state.settings.openAiVectorStoreId || OPENAI_VECTOR_STORE_ID });
-      vs.addEventListener("change", function () { mutate(function () { state.settings.openAiVectorStoreId = vs.value.trim() || OPENAI_VECTOR_STORE_ID; }); });
-      vsRow.appendChild(vs);
-      apiPanel.appendChild(vsRow);
-      apiPanel.appendChild(el("div", { class: "hint mt" }, secretWarning()));
+      apiPanel.appendChild(el("div", { class: "hint mt" }, "Optional — powers the AI agent only. Procedure Q&A is answered from the local corpus and needs no endpoint. " + secretWarning()));
       grid.appendChild(apiPanel);
     }
 
@@ -7758,16 +7469,14 @@
       setApiConfig: function (endpoint, key) { state.settings.apiEndpoint = endpoint || ""; state.settings.apiKey = key && !/^sk-/.test(String(key)) ? key : ""; save(); },
       setFabricConnectorUrl: function (url) { state.integrationSettings = state.integrationSettings || {}; state.integrationSettings.fabricErmasAccountingUrl = url || ""; save(); return state.integrationSettings.fabricErmasAccountingUrl; },
       fabricConnectorUrl: function () { return (state.integrationSettings || {}).fabricErmasAccountingUrl || ""; },
-      setPmSpecialistConfig: function (endpoint, vectorStoreId) { state.settings.pmSpecialistEndpoint = endpoint || PM_SPECIALIST_PROXY_DEFAULT; state.settings.openAiVectorStoreId = vectorStoreId || OPENAI_VECTOR_STORE_ID; save(); },
-      pmSpecialistConfig: function () { return { endpoint: pmProxyBase(), vectorStoreId: pmVectorStoreId(), secretHandling: secretWarning() }; },
+      setAgentEndpoint: function (endpoint) { state.settings.agentEndpoint = endpoint || AGENT_PROXY_DEFAULT; save(); return state.settings.agentEndpoint; },
+      // Migrate a detached workspace object so QA can prove schema migrations
+      // without disturbing live state.
+      migrateRaw: function (ws) { migrate(ws); return ws; },
+      agentProxyConfig: function () { return { endpoint: agentProxyBase(), secretHandling: secretWarning() }; },
       rulesOfCreditValidation: rulesOfCreditValidation,
       applyRuleOfCredit: applyRuleOfCredit,
-      procedureVersionStatus: procedureVersionStatus,
-      refreshProcedureStatuses: refreshProcedureStatuses,
       localPmSearch: localPmSearch,
-      pmSpecialistTabs: function () { return ["Vector Store", "SharePoint Check"]; },
-      pmSpecialistStoreOnly: function () { return true; },
-      buildProjectPromptContext: buildProjectPromptContext,
       projectMetricRows: projectMetricRows,
       selectedMetricRows: selectedMetricRows,
       workflowSummaryRows: workflowSummaryRows,
@@ -7775,12 +7484,7 @@
       insights: insights,
       showNewCardButtonForView: showNewCardButtonForView,
       attachChangeOrderFileRaw: function (coId, att) { var co = (state.changeOrders || []).filter(function (x) { return x.id === coId; })[0]; var n = addChangeOrderAttachment(co, att); save(); return n; },
-      pmAnswerSummary: pmAnswerSummary,
       pmProgressSupported: function () { return true; },
-      vectorStoreAllFilesSupported: function () { return true; },
-      pmCitationLabel: pmCitationLabel,
-      pmCopyText: pmCopyText,
-      vectorStoreFileName: vectorStoreFileName,
       ruleUsageCounts: ruleUsageCounts,
       addRuleOfCreditRaw: function (rule) { rule.id = rule.id || uid("roc"); state.rulesOfCredit.push(rule); save(); return rule.id; },
       updateRuleOfCreditRaw: function (id, patch) { var r = ruleById(id); if (!r) return false; Object.keys(patch || {}).forEach(function (k) { r[k] = patch[k]; }); save(); return true; },

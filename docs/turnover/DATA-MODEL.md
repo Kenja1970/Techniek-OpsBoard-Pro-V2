@@ -95,13 +95,23 @@ all imports, CO decisions, and destructive actions write here.
 ### rulesOfCredit
 `id, name, steps: [{step, incrementPct, mathCheckPct, reportedOutPct}], appliesTo, notes` — steps must sum to 100%; applying a step sets card physical progress and synchronizes logged hours.
 
-### sharePointProcedures / pmDeliverables / vectorStoreFiles / ragQueries
-PM Specialist supporting registers: procedure revision metadata (until Graph
-auth), workbook deliverables, cached vector-store file listings, and the Ask
-history. **Owned by the PM Specialist module — coordinate before changing.**
+### pmDeliverables
+Workbook deliverables register.
+
+*Removed in v5.2.0:* `sharePointProcedures`, `vectorStoreFiles`, and
+`ragQueries` went with the vector-store RAG. `migrate()` **deletes** them from
+older workspaces rather than leaving them orphaned — a stale vector-store id
+should not survive in a product with no vector store.
+
+### knowledgeDocs
+User-uploaded procedure markdown, parsed with frontmatter and ranked alongside
+the built-in corpus. This is where user-supplied procedures actually live.
 
 ### settings
-`role, theme, compact, targetContributionMarginPct (default 66.7 ≙ 3.0x multiplier), autoProgressFromKanban, apiEndpoint, apiKey (sk-* values are scrubbed on load), pmSpecialistEndpoint (default http://127.0.0.1:8787), openAiVectorStoreId`
+`role, theme, compact, targetContributionMarginPct (default 66.7 ≙ 3.0x multiplier), autoProgressFromKanban, wipPolicy, apiEndpoint, apiKey (sk-* values are scrubbed on load), agentEndpoint (default http://127.0.0.1:8787)`
+
+`agentEndpoint` replaced `pmSpecialistEndpoint` in v5.2.0; migration carries the
+old value forward under the new name.
 
 ### history
 Six-week portfolio completion trend `[{week, completed, total}]` seeded at

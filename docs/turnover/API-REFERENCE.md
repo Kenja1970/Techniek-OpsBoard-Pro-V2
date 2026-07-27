@@ -82,44 +82,56 @@ and a human `describe`; `agentApply(plan)` → `{applied, skipped}` (single
 
 **Views** — `viewExists(id)`, `viewIds()`, `navIds()`.
 
-**PM Specialist** *(leave-alone module)* — `pmSpecialistConfig()`,
-`setPmSpecialistConfig(endpoint, vectorStoreId)`, `pmSpecialistTabs()`,
-`pmSpecialistStoreOnly()`, `buildProjectPromptContext`, `localPmSearch`,
-`procedureVersionStatus`, `refreshProcedureStatuses`, `pmAnswerSummary`,
-`pmCitationLabel`, `pmCopyText`, `vectorStoreFileName`,
-`vectorStoreAllFilesSupported()`, `pmProgressSupported()`.
+**Agent proxy & procedures** — `agentProxyConfig()`, `setAgentEndpoint(url)`,
+`localPmSearch`, `pmProgressSupported()`, `migrateRaw(ws)` (migrates a detached
+workspace object so QA can assert schema migrations without touching live
+state).
+
+*Removed in v5.2.0 with the vector-store RAG:* `pmSpecialistConfig`,
+`setPmSpecialistConfig`, `pmSpecialistTabs`, `pmSpecialistStoreOnly`,
+`buildProjectPromptContext`, `procedureVersionStatus`,
+`refreshProcedureStatuses`, `pmAnswerSummary`, `pmCitationLabel`, `pmCopyText`,
+`vectorStoreFileName`, `vectorStoreAllFilesSupported`.
 
 **Import/export** — `importWbsTasks(projectId, parsed)`,
 `exportProjectPackage(projectId)`, `setApiConfig`, `setFabricConnectorUrl`,
 `fabricConnectorUrl()`, `setAutoProgressFromKanban(v)`,
 `reportPdfAvailable()`, `showNewCardButtonForView`.
 
-## 2. PM Specialist proxy — HTTP endpoints
+## 2. Agent proxy — HTTP endpoints
 
-Base URL: `http://127.0.0.1:8787` (override with `PM_PROXY_PORT`).
-Configuration comes from `server/.env.local`; the API key never reaches the
-browser. CORS allows `http://127.0.0.1:8081` only.
+`server/agent-proxy.mjs`. Base URL `http://127.0.0.1:8787` (override with
+`PM_PROXY_PORT`). Configuration comes from `server/.env.local`; the API key
+never reaches the browser. CORS is an env-configurable localhost allowlist.
+
+**The whole surface is two endpoints.** Nothing in the default product path
+requires the proxy at all.
 
 | Method & path | Body / params | Returns |
 |---|---|---|
-| `GET /health` | — | `{ok, keyConfigured, vectorStoreId, model}` |
-| `GET /api/vector-store/files` | `?vectorStoreId=&limit=&all=1` | Vector-store file rows enriched with filename/bytes/purpose; paginates past 100 when `all=1` |
-| `POST /api/vector-store/files` | `{file_id, vectorStoreId?, attributes?}` | Attaches an existing OpenAI file to the store |
-| `DELETE /api/vector-store/files/:fileId` | `?vectorStoreId=` | Detaches the file |
-| `POST /api/vector-store/upload` | multipart `file` (+ `vectorStoreId`) | Uploads to OpenAI Files (purpose `assistants`) then attaches |
-| `POST /api/file-search` | `{question, vectorStoreId?, model?, maxResults?}` | `{outputText, results, raw, storeOnly: true}` — Responses API + `file_search` tool, store-grounded only |
-| `GET /api/sharepoint-registry` | — | `{data: [...]}` procedure revision rows |
-| `POST /api/sharepoint-registry` | `{data: [...]}` | Overwrites the registry JSON |
+| `GET /health` | — | `{ok, agent:{configured, baseUrl, model}}` — never echoes the key |
+| `POST /api/agent` | `{mode:"interpret"\|"narrate", question, context}` | `{ok, narrative, clarification, actions[], parseError, model}` |
 
-**Known production gaps** (see `PRODUCTION-READINESS.md`): endpoints are
-unauthenticated on localhost, multipart parsing is hand-rolled, and the
-registry write is a whole-file overwrite with no locking.
+`interpret` turns a request into structured actions; `narrate` turns
+already-computed deterministic findings into an executive brief. In both cases
+the proxy **only reports what the model returned** — the client re-validates
+every action against board governance before anything can be applied.
+
+**Removed in v5.2.0** with the external vector-store RAG: `/api/file-search`,
+`GET|POST|DELETE /api/vector-store/files`, `/api/vector-store/upload`, and
+`GET|POST /api/sharepoint-registry`. The hand-rolled multipart parser and the
+unlocked whole-file registry write went with them, closing two of the gaps
+listed in `PRODUCTION-READINESS.md`.
+
+**Remaining production gap:** both endpoints are unauthenticated on localhost.
 
 ## 3. Environment variables (proxy)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` | — (required) | OpenAI service key; keep only in `server/.env.local` |
-| `OPENAI_VECTOR_STORE_ID` | `vs_6a4c…bdb4` | Default vector store for file-search |
-| `OPENAI_PM_MODEL` | `gpt-5.5` | Responses API model |
+| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compatible `/chat/completions` gateway |
+| `LLM_API_KEY` | — (required for AI) | Gateway key; keep only in `server/.env.local` |
+| `LLM_MODEL` | — (required for AI) | Model id as the gateway names it |
+| `LLM_MAX_TOKENS` | `1500` | Response cap |
+| `ALLOWED_ORIGINS` | localhost 8100/8081/8080 | CORS allowlist; never set a public origin |
 | `PM_PROXY_PORT` | `8787` | Listen port (127.0.0.1 only) |

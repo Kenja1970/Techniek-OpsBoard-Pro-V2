@@ -8,11 +8,12 @@
   `app.js` (vanilla ES5-compatible JavaScript, single IIFE). No framework, no
   bundler, no npm install. Any static file server runs it:
   `python -m http.server 8081 --bind 127.0.0.1` (canonical local port 8081).
-- **One optional Node process** — `server/pm-specialist-proxy.mjs` (Node 18+,
-  no npm dependencies) that keeps the OpenAI API key server-side for the PM
-  Specialist feature. The rest of the app is fully functional without it.
-- **Persistence:** browser `localStorage` only. No database, no server state
-  except the SharePoint procedure registry JSON the proxy reads/writes.
+- **One optional Node process** — `server/agent-proxy.mjs` (Node 18+, no npm
+  dependencies) that keeps the LLM API key server-side for the PM Agent's
+  interpret/narrate modes. The rest of the app is fully functional without it.
+- **Persistence:** browser `localStorage` only. No database and **no server
+  state at all** — the proxy became stateless in v5.2.0 when the SharePoint
+  registry file was removed with the vector-store RAG.
 
 ## 2. File map
 
@@ -25,9 +26,8 @@
 | `assets/knowledge-corpus.js` | `window.TECHNIEK_KNOWLEDGE` — generated from `knowledge/*.md` by `scripts/build-knowledge.mjs`. A script bundle rather than a runtime `fetch()` because `fetch` is blocked on `file://`. CI fails if it is stale. |
 | `assets/techniek-logo.png`, `assets/favicon.svg` | Brand marks. |
 | `scripts/build-knowledge.mjs` | Corpus compiler (markdown + frontmatter → bundle). |
-| `server/pm-specialist-proxy.mjs` | **Optional** local OpenAI proxy: vector-store file CRUD, file-search Q&A, SharePoint procedure registry. Nothing in the default product path requires it. |
-| `server/.env.local(.example)` | Proxy secrets: `OPENAI_API_KEY`, `OPENAI_VECTOR_STORE_ID`, `OPENAI_PM_MODEL`, `PM_PROXY_PORT`. Never committed. |
-| `server/data/sharepoint-procedure-registry.json` | Procedure revision metadata store (until Microsoft Graph auth is approved). |
+| `server/agent-proxy.mjs` | **Optional** stateless LLM proxy: `/health` and `/api/agent` only. Nothing in the default product path requires it. |
+| `server/.env.local(.example)` | Proxy secrets: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `ALLOWED_ORIGINS`, `PM_PROXY_PORT`. Never committed. |
 | `tests/qa.html`, `tests/qa.js` | Browser QA suite (see §6). |
 | `.github/workflows/guardrails.yml` | Optional CI: syntax checks, required files, version-marker consistency, debug-marker scan. |
 | `docs/` | Product, QA, and turnover documentation. |
@@ -117,19 +117,21 @@ user-initiated rather than automatic.
    automated.
 5. Knowledge answers are **retrieved passages, never generated text**.
 
-## 5. PM Specialist proxy (leave-alone module)
+## 5. Agent proxy (optional, stateless)
 
-The browser never holds the OpenAI key. It calls the local proxy
+The browser never holds an API key. It calls the local proxy
 (`http://127.0.0.1:8787` by default, configurable in Settings):
 
-- `GET /health` · `GET/POST/DELETE /api/vector-store/files` ·
-  `POST /api/vector-store/upload` · `POST /api/file-search` ·
-  `GET/POST /api/sharepoint-registry`
+- `GET /health` · `POST /api/agent`
 
-Answers are constrained to vector-store file-search results (`storeOnly`);
-if retrieval returns nothing the proxy substitutes a fixed
-"not available in the procedure store" response. CORS is pinned to
-`http://127.0.0.1:8081`.
+That is the entire surface. The proxy holds no state, writes no files, and
+**makes no trust decisions** — it relays the model's response and the client
+re-validates every proposed action against board governance before anything can
+be applied. CORS is an env-configurable localhost allowlist.
+
+Procedure retrieval does not involve the proxy: it runs in the browser over the
+bundled corpus (§4). The OpenAI vector-store path this section used to describe
+was removed in v5.2.0.
 
 ## 6. Quality system
 
