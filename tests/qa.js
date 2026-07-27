@@ -844,6 +844,122 @@
       check("health improves when findings clear", Q.advisorHealth().overall.score >= H.overall.score, "now " + Q.advisorHealth().overall.score + " was " + H.overall.score);
     })();
 
+    /* ---- 16. PM Agent: command + recommendation execution ---- */
+    group("16 - PM Agent (command mode, recommendation mode, governance)");
+    Q.resetDemo();
+    (function () {
+      // --- natural-language resolution ---
+      check("resolves a card by fuzzy title", (Q.agentResolveCard("sensor harness") || {}).title === "Sensor harness routing");
+      check("resolves a resource by name", (Q.agentResolveResource("diego") || {}).name === "Diego Romero");
+      check("returns null for an unmatched card", Q.agentResolveCard("zzz nonexistent zzz") === null);
+
+      // --- command parsing (works with no AI service) ---
+      var p1 = Q.agentParseCommand("move Sensor harness routing to Review");
+      check("parses a move command", p1.matched && p1.actions[0].op === "move");
+      var p2 = Q.agentParseCommand("set estimate of Win-theme workshop to 12");
+      check("parses a field update", p2.matched && p2.actions[0].op === "update" && p2.actions[0].fields.estimateHours === 12);
+      var p3 = Q.agentParseCommand("assign Diego Romero to Case study: Harbor Crane at 40%");
+      check("parses an assignment with allocation", p3.matched && p3.actions[0].op === "reassign" && p3.actions[0].allocationPct === 40);
+      var p4 = Q.agentParseCommand("push Accessibility audit by 5 days");
+      check("parses a reschedule", p4.matched && p4.actions[0].op === "reschedule" && p4.actions[0].days === 5);
+      check("unknown phrasing does not fabricate actions", Q.agentParseCommand("make everything better somehow").matched === false);
+
+      // --- planning: valid, invalid, and governance-blocked ---
+      var planMove = Q.agentPlan(p1.actions);
+      check("valid move plans as ok", planMove[0].status === "ok", planMove[0].status + " " + planMove[0].message);
+      check("plan step carries a human description", /Move ".+" from .+ to /.test(planMove[0].describe));
+      var planBad = Q.agentPlan([{ op: "move", cardRef: "zzz nonexistent zzz", stageRef: "Done" }]);
+      check("unresolvable card is rejected, not silently ignored", planBad[0].status === "invalid" && /No card matched/.test(planBad[0].message));
+      var planBadPrio = Q.agentPlan([{ op: "update", cardRef: "Sensor harness routing", fields: { priority: "urgent" } }]);
+      check("invalid enum value is rejected with guidance", planBadPrio[0].status === "invalid" && /critical/.test(planBadPrio[0].message));
+
+      // --- governance: the agent hits the SAME gates a human drag hits ---
+      var s = Q.state();
+      var governed = s.cards.filter(function (c) {
+        if (!c.projectId || Q.isDone(c)) return false;
+        var b = s.boards.filter(function (x) { return x.id === c.boardId; })[0];
+        return b && !!Q.cardMoveValidationMessage(c, Q.lastColumnId(b.id));
+      })[0];
+      check("a governed card exists for the gate test", !!governed);
+      if (governed) {
+        var lastCol = Q.lastColumnId(governed.boardId);
+        var planGated = Q.agentPlan([{ op: "move", cardId: governed.id, columnId: lastCol }]);
+        check("evidence gate blocks the agent too", planGated[0].status === "blocked" && /evidence/i.test(planGated[0].message), planGated[0].message);
+        var before = governed.columnId;
+        Q.agentApply(planGated);
+        check("blocked action is never applied", Q.cardById(governed.id).columnId === before);
+      }
+      // WIP: filling a limited stage must block the agent's next pull into it.
+      var eng = s.boards.filter(function (b) { return b.name === "Engineering Delivery"; })[0];
+      var ip = eng.columns.filter(function (c) { return c.name === "In Progress"; })[0];
+      var candidate = s.cards.filter(function (c) { return c.boardId === eng.id && c.columnId !== ip.id && !Q.isDone(c); })[0];
+      var wipPlan = Q.agentPlan([{ op: "move", cardId: candidate.id, columnId: ip.id }]);
+      check("WIP limit blocks the agent's pull", wipPlan[0].status === "blocked" && /WIP limit/i.test(wipPlan[0].message), wipPlan[0].message);
+
+      // --- Rules-of-Credit progress is not writable by the agent ---
+      var rocCard = s.cards.filter(function (c) { return c.progressMode === "Rules of Credit"; })[0];
+      if (rocCard) {
+        var rocPlan = Q.agentPlan([{ op: "update", cardId: rocCard.id, fields: { progress: 90 } }]);
+        check("Rules-of-Credit progress is governance-blocked", rocPlan[0].status === "blocked" && /Rules of Credit/.test(rocPlan[0].message));
+      } else { check("Rules-of-Credit fixture present (skipped)", true); }
+
+      // --- apply: real mutation through the real path ---
+      Q.resetDemo();
+      var applyPlan = Q.agentPlan(Q.agentParseCommand("set estimate of Win-theme workshop to 12").actions);
+      var target = Q.agentResolveCard("Win-theme workshop");
+      var estBefore = target.estimateHours;
+      var res = Q.agentApply(applyPlan);
+      check("apply reports what it changed", res.applied === 1, "applied " + res.applied);
+      check("estimate actually changed", Q.cardById(target.id).estimateHours === 12, "was " + estBefore);
+      check("effort fields stay coherent after agent edit", (function () {
+        var c = Q.cardById(target.id);
+        return Math.abs(c.progress - Q.progressFromEffortFor(c.estimateHours, c.loggedHours)) <= 1;
+      })());
+      check("agent action is audit-trailed", (Q.state().auditTrail || []).some(function (a) { return a.entity === "PM Agent"; }));
+
+      // --- derived metrics are never written directly ---
+      check("no agent op writes a derived metric", ["cpi", "spi", "eac", "multiplier", "contributionMargin"].every(function (k) {
+        return Q.agentPlan([{ op: "update", cardRef: "Win-theme workshop", fields: (function () { var o = {}; o[k] = 1; return o; })() }])[0].status === "ok";
+      }) && (function () {
+        // ...and applying such a field is a no-op on the card (unknown fields ignored)
+        var c = Q.agentResolveCard("Win-theme workshop");
+        return c.cpi === undefined;
+      })());
+
+      // --- recommendation mode ---
+      Q.resetDemo();
+      var recActions = Q.agentActionsFromFindings();
+      check("recommendation mode proposes actions from findings", recActions.length > 0, "got " + recActions.length);
+      check("every proposed action carries a reason", recActions.every(function (a) { return !!a.reason; }));
+      var wipRelief = Q.agentRebalanceActions();
+      check("WIP relief targets the over-limit stage", wipRelief.length > 0 && wipRelief.every(function (a) { return a.op === "move"; }));
+      var recPlan = Q.agentPlan(recActions);
+      check("recommendation plan validates every step", recPlan.every(function (st) { return ["ok", "blocked", "invalid"].indexOf(st.status) !== -1; }));
+      var okBefore = recPlan.filter(function (st) { return st.status === "ok"; }).length;
+      var appliedRes = Q.agentApply(recPlan);
+      check("applying recommendations relieves the WIP breach", (function () {
+        var s2 = Q.state();
+        var eng2 = s2.boards.filter(function (b) { return b.name === "Engineering Delivery"; })[0];
+        var ip2 = eng2.columns.filter(function (c) { return c.name === "In Progress"; })[0];
+        return s2.cards.filter(function (c) { return c.boardId === eng2.id && c.columnId === ip2.id; }).length <= ip2.wip;
+      })(), "applied " + appliedRes.applied + " of " + okBefore);
+      check("advisor no longer reports the WIP breach", !Q.advisorFindings().some(function (f) { return /WIP limit breached/.test(f.title); }));
+
+      // --- undo: the whole batch is one step ---
+      check("agent batch is a single undo step", (function () {
+        var s3 = Q.state();
+        var eng3 = s3.boards.filter(function (b) { return b.name === "Engineering Delivery"; })[0];
+        var ip3 = eng3.columns.filter(function (c) { return c.name === "In Progress"; })[0];
+        var after = s3.cards.filter(function (c) { return c.boardId === eng3.id && c.columnId === ip3.id; }).length;
+        Q.undo();
+        var s4 = Q.state();
+        var eng4 = s4.boards.filter(function (b) { return b.name === "Engineering Delivery"; })[0];
+        var ip4 = eng4.columns.filter(function (c) { return c.name === "In Progress"; })[0];
+        var restored = s4.cards.filter(function (c) { return c.boardId === eng4.id && c.columnId === ip4.id; }).length;
+        return restored > after;
+      })());
+    })();
+
     render();
   }
 

@@ -452,6 +452,13 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .af-open { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
 @media (max-width: 700px) { .advisor-finding { padding-right: 16px; } .af-open { position: static; transform: none; margin-top: 8px; } }
 
+/* ---------- PM Agent (Ask & Act) ---------- */
+.agent-step { padding: 10px 16px; border-top: 1px solid var(--border); }
+.agent-step:hover { background: var(--surface-2); }
+.as-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.as-reason { color: var(--text-soft); font-size: 13px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.as-msg { color: var(--warn); font-size: 13px; margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--warn); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }

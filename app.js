@@ -106,7 +106,7 @@
     { id: "gantt", label: "Gantt & Critical Path", ico: "G" },
     { id: "actionitems", label: "Action Items", ico: "A" },
     { id: "rulescredit", label: "Rules of Credit", ico: "%" },
-    { id: "pmspecialist", label: "PM Specialist", ico: "M" },
+    { id: "pmspecialist", label: "Procedure Library", ico: "L" },
     { id: "reports", label: "Manager Report", ico: "R" },
     { id: "settings", label: "Settings / Data", ico: "S" },
     { id: "help", label: "Help", ico: "?" },
@@ -2222,12 +2222,444 @@
     go(d.view || "dashboard");
   }
 
+  /* ----------------------------------------------------------------------- *
+   * PM Agent — command + recommendation execution
+   * ---------------------------------------------------------------------- *
+   * Turns a request (typed by the user, or generated from Advisor findings)
+   * into a PLAN of structured actions, validates every action against the same
+   * governance the UI enforces, shows a diff for approval, then applies the
+   * whole batch inside ONE mutate() so it is a single undo step.
+   *
+   * Two rules that must not be broken:
+   *  1. The agent adjusts UNDERLYING DATA only. EVM, multiplier and contribution
+   *     margin are derived — there is deliberately no op that writes them.
+   *  2. Every card move goes through cardMoveValidationMessage() + applyCardMove(),
+   *     exactly like a human drag, so WIP / evidence / dependency / progress-mode
+   *     governance holds for the agent too.
+   * ----------------------------------------------------------------------- */
+  var AGENT_STAGE_WORDS = { backlog: 1, ready: 1, "in progress": 1, doing: 1, review: 1, done: 1, complete: 1, blocked: 1, qa: 1, live: 1 };
+
+  function agentNorm(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim(); }
+  function agentScoreMatch(needle, hay) {
+    needle = agentNorm(needle); hay = agentNorm(hay);
+    if (!needle || !hay) return 0;
+    if (hay === needle) return 100;
+    if (hay.indexOf(needle) !== -1) return 80 - Math.min(20, hay.length - needle.length);
+    var words = needle.split(" ").filter(function (w) { return w.length > 2; });
+    if (!words.length) return 0;
+    var hits = words.filter(function (w) { return hay.indexOf(w) !== -1; }).length;
+    return hits ? Math.round((hits / words.length) * 60) : 0;
+  }
+  function agentResolveCard(text, scopeBoardId) {
+    if (!text) return null;
+    var direct = cardById(String(text).trim());
+    if (direct) return direct;
+    var pool = state.cards.filter(function (c) { return !scopeBoardId || c.boardId === scopeBoardId; });
+    var byCode = pool.filter(function (c) { return agentNorm(cardWbsCode(c)) === agentNorm(text); })[0];
+    if (byCode) return byCode;
+    var best = null, bestScore = 0;
+    pool.forEach(function (c) {
+      var s = Math.max(agentScoreMatch(text, c.title), agentScoreMatch(text, cardWbsCode(c)));
+      if (s > bestScore) { bestScore = s; best = c; }
+    });
+    return bestScore >= 40 ? best : null;
+  }
+  function agentResolveColumn(board, text) {
+    if (!board || !text) return null;
+    var cols = board.columns || [];
+    var exact = cols.filter(function (c) { return agentNorm(c.name) === agentNorm(text); })[0];
+    if (exact) return exact;
+    var best = null, bestScore = 0;
+    cols.forEach(function (c) { var s = agentScoreMatch(text, c.name); if (s > bestScore) { bestScore = s; best = c; } });
+    return bestScore >= 50 ? best : null;
+  }
+  function agentResolveResource(text) {
+    if (!text) return null;
+    var direct = resourceById(String(text).trim());
+    if (direct) return direct;
+    var best = null, bestScore = 0;
+    state.resources.forEach(function (r) { var s = agentScoreMatch(text, r.name); if (s > bestScore) { bestScore = s; best = r; } });
+    return bestScore >= 50 ? best : null;
+  }
+  function agentResolveProject(text) {
+    if (!text) return null;
+    var direct = projectById(String(text).trim());
+    if (direct) return direct;
+    var best = null, bestScore = 0;
+    state.projects.forEach(function (p) {
+      var s = Math.max(agentScoreMatch(text, p.name), agentScoreMatch(text, p.unanetProjectCode));
+      if (s > bestScore) { bestScore = s; best = p; }
+    });
+    return bestScore >= 40 ? best : null;
+  }
+
+  /* ---- Deterministic command parser (works with the LLM proxy OFF) -------- */
+  function agentParseCommand(input) {
+    var raw = String(input || "").trim();
+    var t = raw.toLowerCase();
+    var actions = [];
+    var m;
+
+    // move <card> to <stage>
+    if ((m = /^(?:please\s+)?move\s+(?:the\s+)?(?:card\s+)?["']?(.+?)["']?\s+(?:card\s+)?(?:to|into)\s+["']?(.+?)["']?\.?$/i.exec(raw))) {
+      actions.push({ op: "move", cardRef: m[1], stageRef: m[2], reason: "Requested: " + raw });
+    }
+    // set estimate/hours/progress/priority/due
+    else if ((m = /^(?:please\s+)?set\s+(?:the\s+)?(estimate|estimated hours|hours|logged hours|progress|priority|due date|due)\s+(?:of|for|on)\s+["']?(.+?)["']?\s+to\s+["']?([^"']+?)["']?\.?$/i.exec(raw))) {
+      var field = m[1].toLowerCase(), val = m[3].trim();
+      var fields = {};
+      if (/estimate/.test(field)) fields.estimateHours = parseFloat(val);
+      else if (/logged/.test(field)) fields.loggedHours = parseFloat(val);
+      else if (/^hours$/.test(field)) fields.loggedHours = parseFloat(val);
+      else if (/progress/.test(field)) fields.progress = parseFloat(val);
+      else if (/priority/.test(field)) fields.priority = val.toLowerCase();
+      else if (/due/.test(field)) fields.due = val;
+      actions.push({ op: "update", cardRef: m[2], fields: fields, reason: "Requested: " + raw });
+    }
+    // log N hours on <card>
+    else if ((m = /^(?:please\s+)?log\s+([\d.]+)\s*(?:h|hrs?|hours)?\s+(?:on|to|against)\s+["']?(.+?)["']?\.?$/i.exec(raw))) {
+      actions.push({ op: "update", cardRef: m[2], fields: { loggedHours: parseFloat(m[1]) }, addHours: true, reason: "Requested: " + raw });
+    }
+    // assign <resource> to <card> [at N%]
+    else if ((m = /^(?:please\s+)?assign\s+["']?(.+?)["']?\s+to\s+["']?(.+?)["']?(?:\s+at\s+(\d+)\s*%?)?\.?$/i.exec(raw))) {
+      actions.push({ op: "reassign", resourceRef: m[1], cardRef: m[2], allocationPct: m[3] ? parseInt(m[3], 10) : 100, reason: "Requested: " + raw });
+    }
+    // push/delay/reschedule <card> by N days
+    else if ((m = /^(?:please\s+)?(?:push|delay|reschedule|shift|pull)\s+["']?(.+?)["']?\s+(?:by\s+)?(-?\d+)\s*(?:day|days|d)\b.*$/i.exec(raw))) {
+      var days = parseInt(m[2], 10);
+      if (/\bpull\b/i.test(raw) && days > 0) days = -days;
+      actions.push({ op: "reschedule", cardRef: m[1], days: days, reason: "Requested: " + raw });
+    }
+    // rebalance / fix WIP on a board
+    else if (/\b(rebalance|fix wip|relieve wip|respect wip)\b/i.test(t)) {
+      return { actions: agentRebalanceActions(raw), narrative: "", matched: true, intent: "rebalance" };
+    }
+    return { actions: actions, narrative: "", matched: actions.length > 0, intent: actions.length ? "command" : "" };
+  }
+
+  // Build a WIP-relief plan from the live board state (recommendation mode).
+  function agentRebalanceActions(reason) {
+    var out = [];
+    state.boards.forEach(function (b) {
+      (b.columns || []).forEach(function (col, idx) {
+        if (!col.wip || idx === 0) return;
+        var inCol = boardCards(b.id).filter(function (c) { return c.columnId === col.id && !isDone(c); })
+          .sort(function (a, c) { return (a.progress || 0) - (c.progress || 0); });
+        var over = inCol.length - col.wip;
+        var prev = b.columns[idx - 1];
+        for (var i = 0; i < over && i < inCol.length; i++) {
+          out.push({ op: "move", cardId: inCol[i].id, columnId: prev.id,
+            reason: "WIP relief: " + col.name + " is " + inCol.length + "/" + col.wip + "; returning the least-progressed item to " + prev.name + "." });
+        }
+      });
+    });
+    return out;
+  }
+
+  // Turn Advisor findings into concrete proposed actions (recommendation mode).
+  function agentActionsFromFindings() {
+    var out = agentRebalanceActions("WIP relief");
+    advisorFindings().forEach(function (f) {
+      var d = f.drill || {};
+      if (/unassigned/i.test(f.title) && d.cardId) {
+        // Suggest the least-loaded active person on that board's roster.
+        var c = cardById(d.cardId);
+        var b = c && state.boards.filter(function (x) { return x.id === c.boardId; })[0];
+        var roster = (b && b.rosterIds || []).map(resourceById).filter(function (r) { return r && r.status === "Active" && r.type === "Employee"; });
+        roster.sort(function (a, z) { return resourceUtil(a).util - resourceUtil(z).util; });
+        if (roster[0]) out.push({ op: "reassign", cardId: c.id, resourceId: roster[0].id, allocationPct: 100,
+          reason: "Unassigned work: " + roster[0].name + " is the least-loaded active engineer on this board (" + pct(resourceUtil(roster[0]).util) + ")." });
+      }
+      if (/without an estimate/i.test(f.title) && d.cardId) {
+        out.push({ op: "update", cardId: d.cardId, fields: { estimateHours: 8 },
+          reason: "Unestimated work distorts BAC and capacity; seeding a nominal 8h placeholder for the PM to refine." });
+      }
+    });
+    return out;
+  }
+
+  /* ---- Validation / preview --------------------------------------------- */
+  function agentDescribe(a) {
+    var c = a.cardId ? cardById(a.cardId) : null;
+    switch (a.op) {
+      case "move": {
+        var b = c && state.boards.filter(function (x) { return x.id === c.boardId; })[0];
+        var col = b && (b.columns || []).filter(function (x) { return x.id === a.columnId; })[0];
+        return "Move \"" + (c ? c.title : "?") + "\" from " + (c ? columnName(c) : "?") + " to " + (col ? col.name : "?");
+      }
+      case "update": {
+        var parts = [];
+        Object.keys(a.fields || {}).forEach(function (k) { parts.push(k + " = " + a.fields[k]); });
+        return "Update \"" + (c ? c.title : "?") + "\": " + parts.join(", ");
+      }
+      case "reassign": {
+        var r = resourceById(a.resourceId);
+        return "Assign " + (r ? r.name : "?") + " to \"" + (c ? c.title : "?") + "\" at " + (a.allocationPct || 100) + "%";
+      }
+      case "reschedule":
+        return "Reschedule \"" + (c ? c.title : "?") + "\" by " + (a.days > 0 ? "+" : "") + a.days + " day(s)";
+      case "create":
+        return "Create card \"" + (a.title || "Untitled") + "\"" + (a.estimateHours ? " (" + a.estimateHours + "h)" : "");
+      case "changeorder":
+        return "Draft change order \"" + (a.title || "") + "\"" + (a.budgetDelta ? " (" + money(a.budgetDelta) + ")" : "");
+      default: return a.op;
+    }
+  }
+  // Resolve free-text refs to ids, then validate. Returns a plan of steps with
+  // status ok | blocked | invalid and a human message for each.
+  function agentPlan(actions) {
+    return (actions || []).map(function (a0) {
+      var a = JSON.parse(JSON.stringify(a0));
+      var step = { action: a, status: "ok", message: "" };
+      // --- resolve references ---
+      if (!a.cardId && a.cardRef) { var c = agentResolveCard(a.cardRef); if (c) a.cardId = c.id; }
+      if (!a.resourceId && a.resourceRef) { var r = agentResolveResource(a.resourceRef); if (r) a.resourceId = r.id; }
+      if (!a.projectId && a.projectRef) { var p = agentResolveProject(a.projectRef); if (p) a.projectId = p.id; }
+      var card = a.cardId ? cardById(a.cardId) : null;
+      if (!a.columnId && a.stageRef && card) {
+        var b = state.boards.filter(function (x) { return x.id === card.boardId; })[0];
+        var col = agentResolveColumn(b, a.stageRef);
+        if (col) a.columnId = col.id;
+      }
+
+      // --- per-op validation ---
+      if (a.op === "move") {
+        if (!card) { step.status = "invalid"; step.message = "No card matched \"" + (a.cardRef || a.cardId || "") + "\"."; }
+        else if (!a.columnId) { step.status = "invalid"; step.message = "No stage matched \"" + (a.stageRef || "") + "\" on " + (columnName(card) ? "this board" : "the board") + "."; }
+        else {
+          var gate = cardMoveValidationMessage(card, a.columnId);
+          if (gate) { step.status = "blocked"; step.message = gate; }
+        }
+      } else if (a.op === "update") {
+        if (!card) { step.status = "invalid"; step.message = "No card matched \"" + (a.cardRef || a.cardId || "") + "\"."; }
+        else {
+          var f = a.fields || {};
+          if (f.progress != null) {
+            var mode = card.progressMode || "Kanban Stage";
+            if (mode === "Rules of Credit") { step.status = "blocked"; step.message = "Progress on this card is governed by Rules of Credit — apply a rule step instead of writing a percentage."; }
+          }
+          if (f.priority != null && PRIORITIES.indexOf(String(f.priority).toLowerCase()) === -1) { step.status = "invalid"; step.message = "Priority must be one of: " + PRIORITIES.join(", ") + "."; }
+          if (f.estimateHours != null && !(f.estimateHours >= 0)) { step.status = "invalid"; step.message = "Estimate must be a non-negative number."; }
+          if (f.due != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(f.due))) { step.status = "invalid"; step.message = "Due date must be YYYY-MM-DD."; }
+        }
+      } else if (a.op === "reassign") {
+        if (!card) { step.status = "invalid"; step.message = "No card matched \"" + (a.cardRef || "") + "\"."; }
+        else if (!a.resourceId) { step.status = "invalid"; step.message = "No resource matched \"" + (a.resourceRef || "") + "\"."; }
+      } else if (a.op === "reschedule") {
+        if (!card) { step.status = "invalid"; step.message = "No card matched \"" + (a.cardRef || "") + "\"."; }
+        else if (!a.days) { step.status = "invalid"; step.message = "Reschedule needs a non-zero number of days."; }
+        else if (!cardStart(card) && !cardFinish(card)) { step.status = "blocked"; step.message = "This card has no dates to shift."; }
+      } else if (a.op === "create") {
+        if (!a.title) { step.status = "invalid"; step.message = "A new card needs a title."; }
+      } else if (a.op === "changeorder") {
+        if (!a.projectId) { step.status = "invalid"; step.message = "No project matched \"" + (a.projectRef || "") + "\"."; }
+        else if (!canFinance()) { step.status = "blocked"; step.message = "Raising a change order with a budget delta is limited to manager roles."; }
+      } else {
+        step.status = "invalid"; step.message = "Unsupported action \"" + a.op + "\".";
+      }
+      step.describe = agentDescribe(a);
+      return step;
+    });
+  }
+
+  /* ---- Apply (single undo step, audit-trailed as agent-attributed) -------- */
+  function agentApply(plan) {
+    if (!canEdit()) { toast("Viewer role is read-only", "err"); return { applied: 0, skipped: 0 }; }
+    var ok = plan.filter(function (s) { return s.status === "ok"; });
+    if (!ok.length) return { applied: 0, skipped: plan.length };
+    var applied = 0;
+    mutate(function () {
+      ok.forEach(function (s) {
+        var a = s.action;
+        var card = a.cardId ? cardById(a.cardId) : null;
+        if (a.op === "move" && card) {
+          // Re-check the gate at apply time: an earlier action in this same batch
+          // may have changed the board (e.g. freed WIP or filled it).
+          if (cardMoveValidationMessage(card, a.columnId)) { s.status = "blocked"; s.message = "Blocked when applied (board changed earlier in this batch)."; return; }
+          applyCardMove(card, a.columnId, null);
+          applied++;
+        } else if (a.op === "update" && card) {
+          var f = a.fields || {};
+          if (f.title) card.title = String(f.title);
+          if (f.priority) card.priority = String(f.priority).toLowerCase();
+          if (f.due) card.due = f.due;
+          if (f.startDate) card.startDate = f.startDate;
+          if (f.wbsCode) card.wbsCode = f.wbsCode;
+          if (f.estimateHours != null || f.loggedHours != null || f.progress != null) {
+            var est = f.estimateHours != null ? f.estimateHours : card.estimateHours;
+            var logged = f.loggedHours != null ? (a.addHours ? (card.loggedHours || 0) + f.loggedHours : f.loggedHours) : card.loggedHours;
+            var changed = f.progress != null ? "progress" : "hours";
+            var prog = f.progress != null ? f.progress : card.progress;
+            var eff = effortFieldState(est, logged, prog, changed);
+            card.estimateHours = eff.estimateHours;
+            card.loggedHours = eff.loggedHours;
+            // Manual Physical % keeps physicalProgress as the governed value.
+            if ((card.progressMode || "Kanban Stage") !== "Rules of Credit") {
+              card.progress = eff.progress;
+              if ((card.progressMode || "") === "Manual Physical %") card.physicalProgress = eff.progress;
+            }
+          }
+          logActivity(card, "Agent update: " + s.describe);
+          applied++;
+        } else if (a.op === "reassign" && card) {
+          var rid2 = a.resourceId, pctv = Math.max(0, Math.min(100, a.allocationPct || 100));
+          card.resourceAssignments = (card.resourceAssignments || []).filter(function (x) { return x.resourceId !== rid2; });
+          card.resourceAssignments.unshift({ resourceId: rid2, allocationPct: pctv, role: a.role || "Owner" });
+          card.assigneeId = rid2;
+          logActivity(card, "Agent assigned " + (resourceById(rid2) || {}).name + " at " + pctv + "%");
+          applied++;
+        } else if (a.op === "reschedule" && card) {
+          rescheduleCard(card.id, a.days);
+          applied++;
+        } else if (a.op === "create") {
+          var b2 = a.boardId ? state.boards.filter(function (x) { return x.id === a.boardId; })[0] : activeBoard();
+          var col2 = a.columnId ? (b2.columns || []).filter(function (x) { return x.id === a.columnId; })[0] : b2.columns[0];
+          var nc = normalizeWorkItem({
+            id: uid("c"), boardId: b2.id, columnId: col2.id, projectId: a.projectId || null,
+            title: a.title, desc: a.desc || "", assigneeId: a.resourceId || null,
+            priority: a.priority || "medium", type: a.type || "Task", labels: [],
+            due: a.due || null, startDate: a.startDate || null,
+            estimateHours: a.estimateHours || 0, loggedHours: 0,
+            progress: stageProgress(b2, col2.id), milestone: false, deps: [], checklist: [], comments: [],
+            activity: [{ text: "Created by PM Agent", ts: Date.now() }], createdAt: Date.now(),
+            order: boardCards(b2.id).filter(function (x) { return x.columnId === col2.id; }).length,
+          });
+          state.cards.push(nc);
+          applied++;
+        } else if (a.op === "changeorder") {
+          state.changeOrders = state.changeOrders || [];
+          state.changeOrders.push({
+            id: uid("co"), projectId: a.projectId, number: nextCoNumber(), title: a.title || "Agent-drafted change",
+            category: a.category || "Scope", description: a.description || a.reason || "",
+            requestedBy: "PM Agent (" + ((currentUser() || {}).displayName || "local") + ")",
+            requestedDate: todayISO(), budgetDelta: a.budgetDelta || 0, scheduleDeltaDays: a.scheduleDeltaDays || 0,
+            scopeItems: a.scopeItems || [],
+            // Never auto-approved: approval is a CCB decision, not an agent action.
+            status: "Requested", decidedDate: "", decidedBy: "", notes: "Drafted by the PM Agent for CCB review.",
+            applied: false, createdCardIds: [], attachments: [],
+          });
+          applied++;
+        }
+      });
+      recordAudit("PM Agent", "", "Agent plan applied", applied + " action(s): " + ok.map(function (s) { return s.describe; }).join(" | "));
+    });
+    return { applied: applied, skipped: plan.length - applied };
+  }
+
+  /* ---- Agent console UI -------------------------------------------------- */
+  function renderAgentPlanPreview(host, plan, sourceLabel) {
+    host.innerHTML = "";
+    if (!plan.length) { host.appendChild(el("div", { class: "empty" }, "Nothing to propose — the request produced no actions.")); return; }
+    var okCount = plan.filter(function (s) { return s.status === "ok"; }).length;
+    var head = el("div", { class: "panel-pad" });
+    head.innerHTML = "<h2 style='margin:0'>Proposed changes</h2><div class='muted'>" + esc(sourceLabel || "") +
+      " — " + okCount + " of " + plan.length + " action(s) will apply. Blocked and invalid actions are shown with the reason and are never applied.</div>";
+    host.appendChild(head);
+    plan.forEach(function (s) {
+      var cls = s.status === "ok" ? "ok" : s.status === "blocked" ? "warn" : "danger";
+      var row = el("div", { class: "agent-step" });
+      row.innerHTML =
+        "<div class='as-head'><span class='badge " + cls + "'>" + esc(s.status) + "</span><strong>" + esc(s.describe) + "</strong></div>" +
+        (s.action.reason ? "<div class='as-reason'>" + esc(s.action.reason) + "</div>" : "") +
+        (s.message ? "<div class='as-msg'>" + esc(s.message) + "</div>" : "");
+      host.appendChild(row);
+    });
+    var foot = el("div", { class: "panel-pad flex wrap", style: "gap:8px" });
+    var applyBtn = el("button", { class: "btn primary" }, "Apply " + okCount + " change" + (okCount === 1 ? "" : "s"));
+    applyBtn.disabled = !okCount || !canEdit();
+    applyBtn.addEventListener("click", function () {
+      var res = agentApply(plan);
+      toast(res.applied + " change(s) applied — undo with Ctrl+Z", "ok");
+      ui.agentPlan = null; ui.agentSource = "";
+      render();
+    });
+    var discard = el("button", { class: "btn" }, "Discard");
+    discard.addEventListener("click", function () { ui.agentPlan = null; ui.agentSource = ""; render(); });
+    foot.appendChild(applyBtn); foot.appendChild(discard);
+    foot.appendChild(el("span", { class: "hint" }, "Applies as a single undo step and is recorded in the audit trail as agent-attributed."));
+    host.appendChild(foot);
+  }
+
+  function renderAgentConsole(root) {
+    var proxyOn = !!(ui.agentProxyOk);
+    var intro = el("div", { class: "panel panel-pad mb" });
+    intro.innerHTML =
+      "<h2 style='margin:0 0 6px'>Ask &amp; Act</h2>" +
+      "<div class='muted'>Tell the agent what to change, or let it propose fixes from the Advisor's findings. " +
+      "Every action is validated against the same governance a human drag hits (WIP limits, evidence gates, dependencies, progress-mode), " +
+      "previewed as a diff, and applied as one undoable batch. " +
+      "The agent adjusts underlying data only — EVM, multiplier and contribution margin stay derived.</div>";
+    root.appendChild(intro);
+
+    var ask = el("div", { class: "panel panel-pad mb" });
+    ask.appendChild(el("label", { class: "field-label inline" }, "Command"));
+    var input = el("input", { class: "input", id: "agentInput", placeholder: "e.g. move Sensor harness routing to Review · set estimate of Win-theme workshop to 12 · assign Diego Romero to Case study · push Accessibility audit by 5 days · rebalance WIP" });
+    input.value = ui.agentInput || "";
+    ask.appendChild(input);
+    var row = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    var runBtn = el("button", { class: "btn primary" }, "Plan changes");
+    runBtn.addEventListener("click", function () {
+      var v = $("#agentInput").value.trim();
+      ui.agentInput = v;
+      if (!v) { toast("Type a command first", "err"); return; }
+      var parsed = agentParseCommand(v);
+      if (!parsed.matched) {
+        // No deterministic match — this is where the LLM would resolve intent.
+        ui.agentPlan = [];
+        ui.agentSource = "";
+        ui.agentUnmatched = v;
+        render();
+        return;
+      }
+      ui.agentUnmatched = "";
+      ui.agentPlan = agentPlan(parsed.actions);
+      ui.agentSource = "Command: \"" + v + "\"";
+      render();
+    });
+    var recBtn = el("button", { class: "btn" }, "Propose fixes from findings");
+    recBtn.addEventListener("click", function () {
+      ui.agentUnmatched = "";
+      ui.agentPlan = agentPlan(agentActionsFromFindings());
+      ui.agentSource = "Recommendation mode — derived from Advisor findings";
+      render();
+    });
+    row.appendChild(runBtn); row.appendChild(recBtn);
+    ask.appendChild(row);
+    ask.appendChild(el("div", { class: "hint mt" },
+      "Understood without any AI service: move · set estimate/logged hours/progress/priority/due · log N hours on · assign X to Y at N% · push/pull by N days · rebalance WIP."));
+    root.appendChild(ask);
+
+    if (ui.agentUnmatched) {
+      var un = el("div", { class: "panel panel-pad mb warn-banner" },
+        "The agent could not resolve \"" + esc(ui.agentUnmatched) + "\" into concrete actions offline. " +
+        (proxyOn ? "Try rephrasing with an explicit card name and target." :
+          "Natural-language intent beyond the built-in patterns needs the PM Specialist proxy running (Settings / Data). The built-in command patterns above always work offline."));
+      root.appendChild(un);
+    }
+
+    if (ui.agentPlan) {
+      var panel = el("div", { class: "panel" });
+      renderAgentPlanPreview(panel, ui.agentPlan, ui.agentSource);
+      root.appendChild(panel);
+    }
+  }
+
   // View dispatch table — declared here (first registration point in source
   // order); the "Rendering — dispatch" section below only documents it.
   var VIEWS = {};
 
   VIEWS.advisor = function (root) {
-    root.appendChild(pageHead("PM Advisor", "Deterministic portfolio inspection — graded health, ranked findings, and the recommended move for each. No AI required; the PM Specialist can narrate these findings on request."));
+    var tab = ui.advisorTab || "Findings";
+    root.appendChild(pageHead("PM Advisor", "Deterministic portfolio inspection and an agent that can act on it — graded health, ranked findings, and changes applied through the same governance a human drag hits."));
+    var tabbar = el("div", { class: "flex wrap mb" });
+    ["Findings", "Ask & Act", "Procedure Q&A"].forEach(function (t) {
+      var b = el("button", { class: "btn sm" + (tab === t ? " primary" : " ghost") }, t);
+      b.addEventListener("click", function () { ui.advisorTab = t; render(); });
+      tabbar.appendChild(b);
+    });
+    root.appendChild(tabbar);
+    if (tab === "Ask & Act") return renderAgentConsole(root);
+    if (tab === "Procedure Q&A") return renderPmAsk(root);
     var F = advisorFindings();
     var H = advisorHealth(F);
 
@@ -4643,16 +5075,21 @@
 
 
   /* ---------- PM Specialist ---------- */
+  // Procedure Library = the ADMIN half of the old PM Specialist. The manager-facing
+  // "Ask" surface moved into PM Advisor (Procedure Q&A tab), where procedure
+  // guidance sits next to the findings it explains and the agent that can act on
+  // them. Vector-store and SharePoint freshness are configuration, not advice, so
+  // they stay here.
   VIEWS.pmspecialist = function (root) {
-    var active = ui.pmSpecialistTab || "Ask";
-    root.appendChild(pageHead("PM Specialist", "Procedure-aware PM assistance, vector-store controls, SharePoint freshness checks, and rules-of-credit management."));
-    if (role() === "Viewer") root.appendChild(el("div", { class: "warn-banner mb" }, "Viewer role can review PM Specialist outputs but cannot import projects or change procedure records."));
-    var tabs = ["Ask", "Vector Store", "SharePoint Check"];
+    var active = ui.pmSpecialistTab === "SharePoint Check" ? "SharePoint Check" : "Vector Store";
+    root.appendChild(pageHead("Procedure Library", "Administer the procedure corpus behind the PM Advisor's Procedure Q&A: vector-store contents and SharePoint revision freshness."));
+    if (role() === "Viewer") root.appendChild(el("div", { class: "warn-banner mb" }, "Viewer role can review procedure records but cannot change them."));
+    root.appendChild(el("div", { class: "hint mb" }, "Looking for procedure-grounded answers? They now live in PM Advisor → Procedure Q&A."));
+    var tabs = ["Vector Store", "SharePoint Check"];
     var tabbar = el("div", { class: "flex wrap mb" });
     tabs.forEach(function (t) { var b = el("button", { class: "btn sm" + (active === t ? " primary" : " ghost") }, t); b.addEventListener("click", function () { ui.pmSpecialistTab = t; render(); }); tabbar.appendChild(b); });
     root.appendChild(tabbar);
-    if (active === "Ask") renderPmAsk(root);
-    else if (active === "Vector Store") renderVectorStore(root);
+    if (active === "Vector Store") renderVectorStore(root);
     else renderSharePointCheck(root);
   };
   function pmCitationText(h) {
@@ -5658,32 +6095,40 @@
         }
       }
     }
-    mutate(function () {
-      c.columnId = colId;
-      // Reorder: assign sequential order among cards in this column.
-      var siblings = boardCards(b.id).filter(function (x) { return x.columnId === colId && x.id !== cardId; })
-        .sort(function (a, d) { return a.order - d.order; });
-      var insertAt = beforeCardId ? siblings.map(function (s) { return s.id; }).indexOf(beforeCardId) : siblings.length;
-      if (insertAt < 0) insertAt = siblings.length;
-      siblings.splice(insertAt, 0, c);
-      siblings.forEach(function (s, i) { s.order = i; });
-      // Stage drives percent-complete ONLY for Kanban Stage mode (and when the
-      // global auto-credit setting is on). Manual Physical % and Rules of Credit
-      // retain their governed progress — otherwise a drag silently corrupts EV.
-      if (changedCol) {
-        var nm = (b.columns.filter(function (x) { return x.id === colId; })[0] || {}).name;
-        var last = b.columns[b.columns.length - 1];
-        var mode = c.progressMode || "Kanban Stage";
-        var autoOk = !!(state.settings && state.settings.autoProgressFromKanban);
-        if (autoOk && mode === "Kanban Stage") {
-          c.progress = stageProgress(b, colId);
-          c.physicalProgress = c.progress;
-          logActivity(c, "Moved to " + nm + (colId === last.id ? " (completed)" : " (" + c.progress + "%)"));
-        } else {
-          logActivity(c, "Moved to " + nm + " (progress retained by " + mode + ")");
-        }
+    mutate(function () { applyCardMove(c, colId, beforeCardId); });
+  }
+  // Core of a card move WITHOUT its own mutate() wrapper, so a batch (e.g. an
+  // agent-applied plan) can run many moves inside a single undo step. Callers
+  // are responsible for running cardMoveValidationMessage() first — moveCard()
+  // above does exactly that, and the agent pipeline reuses the same gate.
+  function applyCardMove(c, colId, beforeCardId) {
+    var b = state.boards.filter(function (x) { return x.id === c.boardId; })[0] || activeBoard();
+    var changedCol = c.columnId !== colId;
+    c.columnId = colId;
+    // Reorder: assign sequential order among cards in this column.
+    var siblings = boardCards(b.id).filter(function (x) { return x.columnId === colId && x.id !== c.id; })
+      .sort(function (a, d) { return a.order - d.order; });
+    var insertAt = beforeCardId ? siblings.map(function (s) { return s.id; }).indexOf(beforeCardId) : siblings.length;
+    if (insertAt < 0) insertAt = siblings.length;
+    siblings.splice(insertAt, 0, c);
+    siblings.forEach(function (s, i) { s.order = i; });
+    // Stage drives percent-complete ONLY for Kanban Stage mode (and when the
+    // global auto-credit setting is on). Manual Physical % and Rules of Credit
+    // retain their governed progress — otherwise a drag silently corrupts EV.
+    if (changedCol) {
+      var nm = (b.columns.filter(function (x) { return x.id === colId; })[0] || {}).name;
+      var last = b.columns[b.columns.length - 1];
+      var mode = c.progressMode || "Kanban Stage";
+      var autoOk = !!(state.settings && state.settings.autoProgressFromKanban);
+      if (autoOk && mode === "Kanban Stage") {
+        c.progress = stageProgress(b, colId);
+        c.physicalProgress = c.progress;
+        logActivity(c, "Moved to " + nm + (colId === last.id ? " (completed)" : " (" + c.progress + "%)"));
+      } else {
+        logActivity(c, "Moved to " + nm + " (progress retained by " + mode + ")");
       }
-    });
+    }
+    return true;
   }
   // Percent-complete implied by a card's stage position: first column 0%, last 100%.
   function stageProgress(b, colId) {
@@ -6871,7 +7316,7 @@
       procedureVersionStatus: procedureVersionStatus,
       refreshProcedureStatuses: refreshProcedureStatuses,
       localPmSearch: localPmSearch,
-      pmSpecialistTabs: function () { return ["Ask", "Vector Store", "SharePoint Check"]; },
+      pmSpecialistTabs: function () { return ["Vector Store", "SharePoint Check"]; },
       pmSpecialistStoreOnly: function () { return true; },
       buildProjectPromptContext: buildProjectPromptContext,
       projectMetricRows: projectMetricRows,
@@ -6997,6 +7442,15 @@
       chartPalette: function () { return CHART; },
       advisorFindings: advisorFindings,
       advisorHealth: function () { return advisorHealth(); },
+      agentParseCommand: agentParseCommand,
+      agentPlan: agentPlan,
+      agentApply: agentApply,
+      agentActionsFromFindings: agentActionsFromFindings,
+      agentRebalanceActions: agentRebalanceActions,
+      agentResolveCard: function (t) { return agentResolveCard(t); },
+      agentResolveResource: function (t) { return agentResolveResource(t); },
+      progressFromEffortFor: progressFromEffort,
+      undo: undo,
       cardById: cardById,
       resourceById: resourceById,
       uid: uid,
