@@ -96,6 +96,7 @@
 
   var NAV = [
     { id: "dashboard", label: "Dashboard", ico: "*" },
+    { id: "advisor", label: "PM Advisor", ico: "◆" },
     { id: "workspace", label: "Project Workspace", ico: "P" },
     { id: "wbslist", label: "WBS List", ico: "W" },
     { id: "board", label: "Kanban Board", ico: "K" },
@@ -2019,6 +2020,250 @@
   }
 
   /* ----------------------------------------------------------------------- *
+   * PM Advisor — deterministic portfolio/flow analysis engine
+   * ---------------------------------------------------------------------- *
+   * Inspects the live workspace the way an expert PM / Kanban engineer would
+   * and returns ranked findings, each with severity, hard evidence (the actual
+   * numbers), a recommended action, and a drill-through target. Pure functions
+   * over state; no AI required. The optional LLM layer narrates THESE findings
+   * rather than inventing its own.
+   * ----------------------------------------------------------------------- */
+  var ADVISOR_DIMENSIONS = ["Cost", "Schedule", "Margin", "Flow", "Risk", "Resource", "Governance"];
+  var ADVISOR_AGING_DAYS = 45;   // active work older than this is "aged" (flow smell)
+  var ADVISOR_STALE_RISK_DAYS = 45;
+  var ADVISOR_CO_PENDING_DAYS = 14;
+
+  function cardAgeDays(c) { return Math.floor((Date.now() - (c.createdAt || Date.now())) / 86400000); }
+  function advisorFindings() {
+    var F = [];
+    function add(severity, dimension, title, evidence, action, drill) {
+      F.push({ id: "af_" + F.length, severity: severity, dimension: dimension, title: title, evidence: evidence, action: action, drill: drill || {} });
+    }
+
+    // ---- Flow (Kanban engineering) ----------------------------------------
+    state.boards.forEach(function (b) {
+      (b.columns || []).forEach(function (col) {
+        if (!col.wip) return;
+        var n = boardCards(b.id).filter(function (c) { return c.columnId === col.id; }).length;
+        if (n > col.wip) add("critical", "Flow",
+          "WIP limit breached on " + col.name,
+          col.name + " holds " + n + " of " + col.wip + " allowed (" + b.name + "). Pull-system discipline is broken.",
+          "Stop starting, start finishing: move " + (n - col.wip) + " item(s) back or finish work before pulling more into " + col.name + ".",
+          { boardId: b.id });
+      });
+    });
+    var aged = state.cards.filter(function (c) { return !isDone(c) && cardAgeDays(c) > ADVISOR_AGING_DAYS; })
+      .sort(function (a, b) { return cardAgeDays(b) - cardAgeDays(a); });
+    if (aged.length) {
+      var oldest = aged[0];
+      add(aged.length >= 3 ? "critical" : "warn", "Flow",
+        aged.length + " aging work item" + (aged.length > 1 ? "s" : "") + " (>" + ADVISOR_AGING_DAYS + " days)",
+        "Oldest: \"" + oldest.title + "\" active " + cardAgeDays(oldest) + " days in " + columnName(oldest) + ". Aged WIP hides blocked or abandoned work and inflates cycle time.",
+        "Walk the board right-to-left: finish, split, or explicitly park each aged item. Anything blocked belongs in the dependency register, not idling in a stage.",
+        { cardId: oldest.id });
+      // Bottleneck stage: where aged work accumulates
+      var byCol = {};
+      aged.forEach(function (c) { var k = c.boardId + "::" + c.columnId; byCol[k] = (byCol[k] || []).concat([c]); });
+      var worst = Object.keys(byCol).sort(function (a, b) { return byCol[b].length - byCol[a].length; })[0];
+      if (worst && byCol[worst].length >= 2) {
+        var wc = byCol[worst][0];
+        add("warn", "Flow", "Bottleneck forming in " + columnName(wc),
+          byCol[worst].length + " aged items are sitting in " + columnName(wc) + " — arrival rate is beating exit rate.",
+          "Add review/finishing capacity to this stage or lower its WIP limit until the queue drains.",
+          { boardId: wc.boardId });
+      }
+    }
+    var blocked = state.cards.filter(function (c) { return !isDone(c) && dependencyBlockState(c).open.length; });
+    if (blocked.length) add("warn", "Flow",
+      blocked.length + " item" + (blocked.length > 1 ? "s" : "") + " blocked by open dependencies",
+      "\"" + blocked[0].title + "\" waits on " + dependencyBlockLabel(blocked[0]) + (blocked.length > 1 ? " (+" + (blocked.length - 1) + " more)" : "") + ".",
+      "Expedite the blocking work or re-sequence: blocked items burn calendar without burning scope.",
+      { cardId: blocked[0].id });
+    var unassigned = state.cards.filter(function (c) { return !isDone(c) && !c.assigneeId && !(c.resourceAssignments || []).length; });
+    if (unassigned.length) add("warn", "Flow",
+      unassigned.length + " active item" + (unassigned.length > 1 ? "s" : "") + " unassigned",
+      "\"" + unassigned[0].title + "\" has no responsible owner — nobody is accountable for pulling it.",
+      "Assign a responsible lead (the lead row IS the assignee) or move the work back to the backlog.",
+      { cardId: unassigned[0].id });
+    var unestimated = state.cards.filter(function (c) { return !isDone(c) && !c.milestone && !(c.estimateHours > 0); });
+    if (unestimated.length) add("warn", "Flow",
+      unestimated.length + " active item" + (unestimated.length > 1 ? "s" : "") + " without an estimate",
+      "\"" + unestimated[0].title + "\" carries 0h estimate — it is invisible to EV, capacity, and forecast math.",
+      "Estimate the work (even coarsely). Unestimated cards corrupt BAC, utilization, and the 4-week forecast.",
+      { cardId: unestimated[0].id });
+
+    // ---- Per-project cost / schedule / margin ------------------------------
+    state.projects.forEach(function (p) {
+      var r = projectRollup(p);
+      var v = projectEVM(p);
+      var drill = { projectId: p.id, tab: "Summary" };
+      if (v.ac > 500 && v.cpi < 0.9) add(v.cpi < 0.75 ? "critical" : "warn", "Cost",
+        p.name + ": cost overrun (CPI " + num2(v.cpi) + ")",
+        "EV " + money(v.ev) + " vs AC " + money(v.ac) + "; forecast EAC " + money(v.eac) + " against BAC " + money(v.bac) + ".",
+        "Re-estimate remaining work and check the rate mix against plan. If the growth is scope-driven, raise a change order instead of absorbing it.",
+        drill);
+      if (v.ac > 500 && v.cpi >= 0.9 && (v.bac - v.eac) < 0) add("warn", "Cost",
+        p.name + ": negative VAC (" + money(v.bac - v.eac) + ")",
+        "EAC " + money(v.eac) + " exceeds BAC " + money(v.bac) + " at current efficiency.",
+        "Tighten remaining estimates or recover efficiency; brief the client before the variance hardens.",
+        drill);
+      var funded = contractValue(p);
+      if (p.billable && funded > 0 && v.eac > funded * 1.02) add("critical", "Cost",
+        p.name + ": forecast exceeds funding",
+        "Cost EAC " + money(v.eac) + " vs funded value " + money(funded) + ".",
+        "Stop-work risk: secure additional funding (change order) or descope before the ceiling is breached.",
+        { projectId: p.id, tab: "Financials" });
+      if (v.pv > 0 && v.spi < 0.9) add(v.spi < 0.75 ? "critical" : "warn", "Schedule",
+        p.name + ": behind schedule (SPI " + num2(v.spi) + ")",
+        "Schedule variance " + money(v.sv) + " (EV " + money(v.ev) + " vs PV " + money(v.pv) + ").",
+        "Review the critical path and re-sequence or add capacity to the constraining discipline; re-baseline only via change control.",
+        { projectId: p.id, tab: "Gantt" });
+      if (r.overdue >= 2) add(r.overdue >= 4 ? "critical" : "warn", "Schedule",
+        p.name + ": " + r.overdue + " overdue items",
+        r.overdue + " of " + r.cards + " work items are past due.",
+        "Triage overdue work: finish, reschedule with the client, or kill. Every silent slip erodes SPI credibility.",
+        { projectId: p.id, tab: "Kanban" });
+      if (p.billable && r.contributionMargin != null && r.earnedRevenue > 0) {
+        var cm = r.contributionMargin * 100;
+        var target = state.settings.targetContributionMarginPct != null ? state.settings.targetContributionMarginPct : DEFAULT_TARGET_CM_PCT;
+        var multStr = r.billableSpent > 0 ? num2(r.earnedRevenue / r.billableSpent) + "x" : "n/a";
+        if (cm < target - 10) add("critical", "Margin",
+          p.name + ": contribution margin " + num2(cm) + "% (target " + target + "%)",
+          "Earned multiplier " + multStr + ". Earned revenue " + money(r.earnedRevenue) + " vs billable labor " + money(r.billableSpent) + ".",
+          "Rework the staffing mix toward planned rates, or reprice: this margin is more than 10 points under target.",
+          { projectId: p.id, tab: "Financials" });
+        else if (cm < target) add("warn", "Margin",
+          p.name + ": margin below target (" + num2(cm) + "% vs " + target + "%)",
+          "Earned multiplier " + multStr + " — within 10 points of target but trending under.",
+          "Watch the labor multiplier weekly; shift junior/senior mix or bill-rate assignments before the gap widens.",
+          { projectId: p.id, tab: "Financials" });
+      }
+    });
+
+    // ---- Risk register discipline -----------------------------------------
+    var openRisks = (state.risks || []).filter(function (r) { return r.status !== "Closed"; });
+    var stale = openRisks.filter(function (r) { return r.lastReviewed && Math.floor((Date.now() - new Date(r.lastReviewed + "T00:00:00")) / 86400000) > ADVISOR_STALE_RISK_DAYS; });
+    if (stale.length) add("warn", "Risk",
+      stale.length + " risk" + (stale.length > 1 ? "s" : "") + " past review discipline",
+      "\"" + stale[0].title + "\" last reviewed " + stale[0].lastReviewed + " (>" + ADVISOR_STALE_RISK_DAYS + " days). A register nobody reviews is theater.",
+      "Re-score probability/impact at the next project review and refresh the response plan.",
+      { projectId: stale[0].projectId, tab: "Risk Register" });
+    var pastDue = openRisks.filter(function (r) { return r.dueDate && r.dueDate < todayISO(); });
+    if (pastDue.length) add("warn", "Risk",
+      pastDue.length + " risk response" + (pastDue.length > 1 ? "s" : "") + " past due",
+      "\"" + pastDue[0].title + "\" response was due " + pastDue[0].dueDate + " and the risk is still " + pastDue[0].status + ".",
+      "Close the response action or escalate ownership — an overdue mitigation is an accepted risk by default.",
+      { projectId: pastDue[0].projectId, tab: "Risk Register" });
+    var hotAccepted = openRisks.filter(function (r) { return (r.probability * r.impact) >= 15 && /accept/i.test(r.response || ""); });
+    if (hotAccepted.length) add("info", "Risk",
+      "High-exposure risk on an Accept strategy",
+      "\"" + hotAccepted[0].title + "\" scores " + (hotAccepted[0].probability * hotAccepted[0].impact) + "/25 inherent yet the response is Accept.",
+      "Confirm acceptance is a deliberate, documented decision at the right authority level — not a default.",
+      { projectId: hotAccepted[0].projectId, tab: "Risk Register" });
+
+    // ---- Resource load -----------------------------------------------------
+    var under = [];
+    state.resources.forEach(function (r) {
+      if (r.status && r.status !== "Active") return;
+      var u = resourceUtil(r);
+      if (u.util > 110) add(u.util > 130 ? "critical" : "warn", "Resource",
+        r.name + " over-allocated (" + pct(u.util) + ")",
+        hours(u.allocated) + " of remaining work against " + hours(u.capacity) + "/wk capacity.",
+        "Rebalance assignments, extend dates via change control, or bring in the subcontract bench — sustained >110% is schedule risk, not heroics.",
+        { resourceId: r.id, view: "resources" });
+      else if (u.util < 25 && r.capacityHrs > 0 && (r.type === "Employee" || r.type === "Subcontractor")) under.push(r.name + " (" + pct(u.util) + ")");
+    });
+    if (under.length) add("info", "Resource",
+      "Relief capacity available",
+      under.slice(0, 4).join(", ") + (under.length > 4 ? " +" + (under.length - 4) + " more" : "") + " are under 25% allocated.",
+      "Use this bench to relieve the over-allocated leads before dates slip.",
+      { view: "resources" });
+
+    // ---- Governance / change control --------------------------------------
+    (state.changeOrders || []).forEach(function (co) {
+      if (co.status !== "Requested" && co.status !== "Under Review") return;
+      var days = co.requestedDate ? Math.floor((Date.now() - new Date(co.requestedDate + "T00:00:00")) / 86400000) : 0;
+      if (days > ADVISOR_CO_PENDING_DAYS) add("warn", "Governance",
+        co.number + " pending decision for " + days + " days",
+        "\"" + co.title + "\" (" + (co.budgetDelta ? money(co.budgetDelta) : "no budget delta") + (co.scheduleDeltaDays ? ", " + co.scheduleDeltaDays + "d schedule" : "") + ") has sat " + co.status + " since " + co.requestedDate + ".",
+        "Put it on the next CCB agenda. Undecided change orders leak scope into execution without funding.",
+        { view: "changecontrol" });
+    });
+
+    var rank = { critical: 0, warn: 1, info: 2 };
+    F.sort(function (a, b) { return rank[a.severity] - rank[b.severity] || a.dimension.localeCompare(b.dimension); });
+    return F;
+  }
+
+  function advisorHealth(findings) {
+    var F = findings || advisorFindings();
+    var penalty = { critical: 25, warn: 10, info: 3 };
+    var dims = {};
+    ADVISOR_DIMENSIONS.forEach(function (d) { dims[d] = { score: 100, critical: 0, warn: 0, info: 0 }; });
+    F.forEach(function (f) {
+      var d = dims[f.dimension]; if (!d) return;
+      d[f.severity]++; d.score = Math.max(5, d.score - penalty[f.severity]);
+    });
+    function grade(s) { return s >= 90 ? "A" : s >= 80 ? "B" : s >= 70 ? "C" : s >= 60 ? "D" : "F"; }
+    var total = 0;
+    ADVISOR_DIMENSIONS.forEach(function (d) { dims[d].grade = grade(dims[d].score); total += dims[d].score; });
+    var overall = Math.round(total / ADVISOR_DIMENSIONS.length);
+    return { dimensions: dims, overall: { score: overall, grade: grade(overall) }, findings: F.length };
+  }
+
+  function advisorDrill(f) {
+    var d = f.drill || {};
+    if (d.cardId) {
+      var c = cardById(d.cardId);
+      if (c) { state.activeBoardId = c.boardId; save(); go("board"); openCardEditor(c.id); return; }
+    }
+    if (d.projectId && projectById(d.projectId)) { ui.workspaceProjectId = d.projectId; ui.workspaceTab = d.tab || "Summary"; go("workspace"); return; }
+    if (d.boardId) { state.activeBoardId = d.boardId; save(); go("board"); return; }
+    go(d.view || "dashboard");
+  }
+
+  // View dispatch table — declared here (first registration point in source
+  // order); the "Rendering — dispatch" section below only documents it.
+  var VIEWS = {};
+
+  VIEWS.advisor = function (root) {
+    root.appendChild(pageHead("PM Advisor", "Deterministic portfolio inspection — graded health, ranked findings, and the recommended move for each. No AI required; the PM Specialist can narrate these findings on request."));
+    var F = advisorFindings();
+    var H = advisorHealth(F);
+
+    var scoreGrid = el("div", { class: "grid cols-4 mb advisor-scores" });
+    var overallCls = H.overall.score >= 80 ? "ok" : H.overall.score >= 60 ? "warn" : "danger";
+    scoreGrid.appendChild(el("div", { class: "stat advisor-overall" },
+      "<div class='stat-label'>Portfolio health</div><div class='stat-value " + overallCls + "'>" + H.overall.grade + " · " + H.overall.score + "</div><div class='stat-sub'>" + F.length + " findings · " + F.filter(function (x) { return x.severity === "critical"; }).length + " critical</div>"));
+    ADVISOR_DIMENSIONS.forEach(function (d) {
+      var s = H.dimensions[d];
+      var cls = s.score >= 80 ? "ok" : s.score >= 60 ? "warn" : "danger";
+      scoreGrid.appendChild(el("div", { class: "stat" },
+        "<div class='stat-label'>" + d + "</div><div class='stat-value " + cls + "'>" + s.grade + "</div><div class='stat-sub'>" + s.score + "/100 · " + s.critical + " crit / " + s.warn + " warn</div>"));
+    });
+    root.appendChild(scoreGrid);
+
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "panel-pad" }, "<h2 style='margin:0'>Findings & recommended actions</h2><div class='muted'>Ranked by severity. Every recommendation drills straight to the offending card, project, resource, or register.</div>"));
+    if (!F.length) panel.appendChild(el("div", { class: "empty" }, "No findings. The portfolio is clean by every rule the Advisor knows."));
+    F.forEach(function (f) {
+      var sevCls = f.severity === "critical" ? "danger" : f.severity === "warn" ? "warn" : "neutral";
+      var row = el("div", { class: "advisor-finding" });
+      row.innerHTML =
+        "<div class='af-head'><span class='badge " + sevCls + "'>" + esc(f.severity) + "</span>" +
+        "<span class='chip label'>" + esc(f.dimension) + "</span>" +
+        "<strong class='af-title'>" + esc(f.title) + "</strong></div>" +
+        "<div class='af-evidence'>" + esc(f.evidence) + "</div>" +
+        "<div class='af-action'>" + esc(f.action) + "</div>";
+      var open = el("button", { class: "btn sm af-open" }, "Open");
+      open.addEventListener("click", function () { advisorDrill(f); });
+      row.appendChild(open);
+      panel.appendChild(row);
+    });
+    root.appendChild(panel);
+  };
+
+  /* ----------------------------------------------------------------------- *
    * Rendering — shell
    * ----------------------------------------------------------------------- */
   function renderShell() {
@@ -2093,7 +2338,7 @@
     fn(v);
   }
 
-  var VIEWS = {};
+  /* VIEWS is declared above (PM Advisor section) — first registration in source order. */
 
   /* ---------- Dashboard ---------- */
   VIEWS.dashboard = function (root) {
@@ -6750,6 +6995,10 @@
         return p && (p.evmOverride || p.financialOverride || (p.sourceSystem && p.sourceSystem !== "Local")) ? ["Schedule Controls"].concat(base) : base;
       },
       chartPalette: function () { return CHART; },
+      advisorFindings: advisorFindings,
+      advisorHealth: function () { return advisorHealth(); },
+      cardById: cardById,
+      resourceById: resourceById,
       uid: uid,
     },
   };

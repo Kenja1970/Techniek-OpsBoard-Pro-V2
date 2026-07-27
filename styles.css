@@ -441,6 +441,17 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .col-filter { padding: 0 10px 6px; display: flex; align-items: center; gap: 6px; }
 .col-filter .input { padding: 6px 9px; font-size: 13px; }
 
+/* ---------- PM Advisor ---------- */
+.advisor-scores .advisor-overall { border-top: 3px solid; border-image: var(--tek-gradient) 1; }
+.advisor-finding { position: relative; padding: 12px 96px 12px 16px; border-top: 1px solid var(--border); }
+.advisor-finding:hover { background: var(--surface-2); }
+.af-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.af-title { font-size: 14px; }
+.af-evidence { color: var(--text-soft); font-size: 13px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.af-action { color: var(--text); font-size: 13px; margin-top: 5px; padding-left: 12px; border-left: 3px solid; border-image: var(--tek-gradient) 1; }
+.af-open { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
+@media (max-width: 700px) { .advisor-finding { padding-right: 16px; } .af-open { position: static; transform: none; margin-top: 8px; } }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }

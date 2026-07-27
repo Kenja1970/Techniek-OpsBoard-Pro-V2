@@ -801,6 +801,49 @@
       check("no legacy vendor teal in chart palette", JSON.stringify(pal).indexOf("#0f766e") === -1);
     })();
 
+    /* ---- 15. PM Advisor deterministic engine ---- */
+    group("15 - PM Advisor deterministic engine");
+    Q.resetDemo();
+    (function () {
+      var F = Q.advisorFindings();
+      check("advisor produces a substantive finding set", F.length >= 10, "got " + F.length);
+      check("every finding carries severity, dimension, evidence, and action", F.every(function (f) { return f.severity && f.dimension && f.title && f.evidence && f.action; }));
+      check("findings are severity-ranked (critical first)", (function () { var rank = { critical: 0, warn: 1, info: 2 }; for (var i = 1; i < F.length; i++) { if (rank[F[i].severity] < rank[F[i - 1].severity]) return false; } return true; })());
+      check("WIP breach detected with exact numbers", F.some(function (f) { return f.dimension === "Flow" && /WIP/.test(f.title) && /5 of 4/.test(f.evidence); }));
+      check("aging WIP detected with oldest item named", F.some(function (f) { return f.dimension === "Flow" && /aging/i.test(f.title) && /Oldest:/.test(f.evidence); }));
+      check("dependency-blocked work detected", F.some(function (f) { return f.dimension === "Flow" && /blocked/i.test(f.title); }));
+      check("unassigned active work detected", F.some(function (f) { return /unassigned/i.test(f.title); }));
+      check("unestimated active work detected", F.some(function (f) { return /estimate/i.test(f.title); }));
+      check("cost overrun detected via CPI", F.some(function (f) { return f.dimension === "Cost" && /CPI 0\.\d+/.test(f.title); }));
+      check("schedule slip detected via SPI", F.some(function (f) { return f.dimension === "Schedule" && /SPI 0\.\d+/.test(f.title); }));
+      check("margin-below-target detected", F.some(function (f) { return f.dimension === "Margin"; }));
+      check("over-allocation detected", F.some(function (f) { return f.dimension === "Resource" && /over-allocated/i.test(f.title); }));
+      check("stale risk reviews detected", F.some(function (f) { return f.dimension === "Risk" && /review/i.test(f.title); }));
+      check("pending change order detected with its number", F.some(function (f) { return f.dimension === "Governance" && /CO-\d+/.test(f.title); }));
+      check("every drill-through target resolves", F.every(function (f) {
+        var d = f.drill || {};
+        if (d.cardId) return !!Q.cardById(d.cardId);
+        if (d.projectId) return !!Q.projectById(d.projectId);
+        if (d.resourceId) return !!Q.resourceById(d.resourceId);
+        return !!(d.view || d.boardId);
+      }));
+      var H = Q.advisorHealth();
+      check("health grades every dimension A-F", ["Cost", "Schedule", "Margin", "Flow", "Risk", "Resource", "Governance"].every(function (d) { return H.dimensions[d] && /^[A-F]$/.test(H.dimensions[d].grade); }));
+      check("overall health score bounded 0-100 with grade", /^[A-F]$/.test(H.overall.grade) && H.overall.score >= 0 && H.overall.score <= 100);
+      check("advisor view is reachable from nav", Q.navIds().indexOf("advisor") !== -1);
+      // Reactivity: fixing a problem must improve the health score.
+      var wipBefore = F.filter(function (f) { return /WIP/.test(f.title); }).length;
+      var s = Q.state();
+      var eng = s.boards.filter(function (b) { return b.name === "Engineering Delivery"; })[0];
+      var ip = eng.columns.filter(function (c) { return c.name === "In Progress"; })[0];
+      var overflow = s.cards.filter(function (c) { return c.boardId === eng.id && c.columnId === ip.id; })[0];
+      var backlog = eng.columns[0];
+      overflow.columnId = backlog.id; // direct state surgery: relieve the breach
+      var F2 = Q.advisorFindings();
+      check("relieving the WIP breach clears the finding", F2.filter(function (f) { return /WIP/.test(f.title); }).length < wipBefore, "was " + wipBefore);
+      check("health improves when findings clear", Q.advisorHealth().overall.score >= H.overall.score, "now " + Q.advisorHealth().overall.score + " was " + H.overall.score);
+    })();
+
     render();
   }
 
