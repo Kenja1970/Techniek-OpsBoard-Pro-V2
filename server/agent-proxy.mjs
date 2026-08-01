@@ -140,6 +140,40 @@ async function llmChat(messages, { jsonOnly = true } = {}) {
   return data?.choices?.[0]?.message?.content || "";
 }
 
+// Models do not reliably honor response_format:json_object — Anthropic models
+// via OpenRouter intermittently wrap the object in a ```json fence, which made
+// JSON.parse throw and discarded a perfectly good answer roughly one call in
+// four. Strip the fence, then fall back to the outermost {...} span. This only
+// ever RECOVERS an object; it never invents one, and the client still validates
+// every action it contains.
+function parseModelJson(content) {
+  const raw = String(content || "").trim();
+  if (!raw) return { parsed: null, parseError: "empty response" };
+
+  const candidates = [raw];
+  const fenced = /^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n?```$/i.exec(raw);
+  if (fenced) candidates.push(fenced[1].trim());
+  // Outermost {...} span, for a model that wrapped the object in prose. Skipped
+  // when the response is a JSON array, or this would reach inside it and pass
+  // off an element as the whole contract object.
+  const body = fenced ? fenced[1].trim() : raw;
+  if (!body.startsWith("[")) {
+    const first = body.indexOf("{"), last = body.lastIndexOf("}");
+    if (first !== -1 && last > first) candidates.push(body.slice(first, last + 1));
+  }
+
+  let lastError = "";
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      // Only accept a real object — a bare string or array is not our contract.
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { parsed, parseError: "" };
+      lastError = "model returned " + (Array.isArray(parsed) ? "an array" : typeof parsed) + ", expected an object";
+    } catch (e) { lastError = e.message; }
+  }
+  return { parsed: null, parseError: lastError };
+}
+
 async function handle(req, res) {
   if (req.method === "OPTIONS") { res.writeHead(204, corsHeaders(req)); return res.end(); }
   const url = new URL(req.url, "http://127.0.0.1:" + PORT);
@@ -164,8 +198,7 @@ async function handle(req, res) {
         { role: "system", content: system },
         { role: "user", content: "CONTEXT (authoritative — ids come from here):\n" + context.slice(0, 60000) + "\n\nREQUEST:\n" + question },
       ]);
-      let parsed = null, parseError = "";
-      try { parsed = JSON.parse(content); } catch (e) { parseError = e.message; }
+      const { parsed, parseError } = parseModelJson(content);
       // The client re-validates everything; the proxy only reports what it got.
       return json(res, 200, {
         ok: !!parsed, parseError,
@@ -182,7 +215,16 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, "127.0.0.1", () => {
+// Export the pure parser so tests can exercise it without binding a port, and
+// only listen when this file is run directly rather than imported.
+export { parseModelJson };
+
+const isMain = (() => {
+  try { return fileURLToPath(import.meta.url) === path.resolve(process.argv[1] || ""); }
+  catch { return false; }
+})();
+
+if (isMain) http.createServer(handle).listen(PORT, "127.0.0.1", () => {
   console.log("Techniek OpsBoard agent proxy listening on http://127.0.0.1:" + PORT);
   console.log("  agent configured: " + !!(LLM_API_KEY && LLM_MODEL) + (LLM_MODEL ? " (" + LLM_MODEL + ")" : " — set LLM_API_KEY and LLM_MODEL in server/.env.local"));
 });

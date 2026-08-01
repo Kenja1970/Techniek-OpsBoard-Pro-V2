@@ -5,6 +5,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [5.2.1] — 2026-07-29
+
+### Fixed
+- **The agent discarded roughly one good answer in four.** `response_format: {type:"json_object"}` is a request, not a guarantee — Anthropic models via OpenRouter intermittently wrapped the object in a ` ```json ` fence. `JSON.parse` threw, `ok` came back `false`, and a correct, fully-grounded answer was thrown away as a failure. Measured live: 1 failure in 4 calls before the fix, 6 for 6 after.
+
+  The proxy now parses tolerantly — it tries the raw text, then a fenced block, then the outermost `{…}` span. It can only ever **recover** an object the model actually sent: it never manufactures one, rejects arrays, bare strings, numbers, `null`, and truncated output, and always returns a reason. The client still validates every action, unchanged.
+
+### Added
+- `tests/agent-proxy-parse.test.mjs` — 18 regression checks over the parser, including the exact fenced payload seen in the wild, content-fidelity (recovery must preserve the payload, not merely parse), and that a rejection explains itself. Wired into Guardrails CI.
+- `parseModelJson` is exported and the proxy only calls `listen()` when run directly, so the module is importable by tests without binding a port. Running it directly is unchanged.
+
 ## [5.2.0] — 2026-07-27
 
 Removes the inherited OpenAI vector-store RAG. **The procedures themselves stay** — they were never in the vector store. They live in `knowledge/*.md`, are compiled into the app, and are retrieved in-browser with BM25.

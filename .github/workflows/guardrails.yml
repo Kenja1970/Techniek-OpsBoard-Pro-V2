@@ -39,6 +39,9 @@ jobs:
       - name: QA harness syntax check
         run: node --check tests/qa.js
 
+      - name: Agent proxy parser regression test
+        run: node tests/agent-proxy-parse.test.mjs
+
       - name: Knowledge corpus is in sync with knowledge/*.md
         run: |
           set -e
