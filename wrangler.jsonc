@@ -6,6 +6,15 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	// The Worker owns the whole subdomain: it serves the landing page, the demo,
+	// the request form, and the application, and routes /api itself. Cloudflare
+	// Access sits in front with Bypass applications for the public paths.
+	"routes": [
+		{
+			"pattern": "opsboard.techniekengineering.com",
+			"custom_domain": true
+		}
+	],
 	"assets": {
 		"directory": "public",
 		"binding": "ASSETS",
