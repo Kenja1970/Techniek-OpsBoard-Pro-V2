@@ -17,8 +17,8 @@
   var LEGACY_ACCOUNTS_KEY = "techniek-opsboard-accounts";
   var PRODUCT_NAME = "Techniek OpsBoard Pro V2";
   var PRODUCT_SHORT = "OpsBoard V2";
-  var SCHEMA_VERSION = "5.0.0";
-  var APP_VERSION = "5.2.1";
+  var SCHEMA_VERSION = "6.0.0";
+  var APP_VERSION = "6.0.0";
   // Kanban WIP policy: "hard" blocks pulls that would exceed a stage limit (Anderson / LeanKanban).
   // "soft" warns only (legacy demo behavior). Production default is hard.
   var WIP_POLICIES = ["hard", "soft"];
@@ -109,6 +109,9 @@
     { id: "reports", label: "Manager Report", ico: "R" },
     { id: "client", label: "Client Report", ico: "B" },
     { id: "audit", label: "Audit Trail", ico: "T" },
+    // Server-administered accounts. Hidden unless the signed-in identity is an
+    // administrator according to the server, not the simulated role selector.
+    { id: "admin", label: "Accounts", ico: "U", serverAdminOnly: true },
     { id: "settings", label: "Settings / Data", ico: "S" },
     { id: "help", label: "Help", ico: "?" },
   ];
@@ -213,6 +216,35 @@
   /* ----------------------------------------------------------------------- *
    * Demo workspace (fictional Techniek data)
    * ----------------------------------------------------------------------- */
+  /**
+   * A new account starts empty, not with someone else's demo portfolio.
+   *
+   * One board is provided because a Kanban board with no columns cannot be
+   * reasoned about at all — but the WIP limits are left unset deliberately, so
+   * setting them is a real step in the checklist rather than a default the user
+   * never thinks about (which is how WIP limits end up meaningless).
+   */
+  function blankWorkspace() {
+    var board = {
+      id: uid("b"), name: "Delivery", type: "kanban", rosterIds: [],
+      columns: ["Backlog", "Ready", "In Progress", "Review", "Done"].map(function (n) {
+        return { id: uid("col"), name: n, wip: 0 };
+      }),
+    };
+    return migrate({
+      version: SCHEMA_VERSION,
+      blankStart: true,
+      savedAt: Date.now(),
+      activeBoardId: board.id,
+      boards: [board],
+      resources: [], projects: [], cards: [], portfolios: null, programs: null,
+      risks: [], issues: [], decisions: [], actionItems: [], changeOrders: [],
+      resourceEngagements: [], resourceAvailability: [], imports: [], auditTrail: [],
+      wbsElements: [], pmDeliverables: [], knowledgeDocs: [], history: [],
+      settings: { role: "Project Manager", theme: "dark" },
+    });
+  }
+
   function demoWorkspace() {
     var R = function (name, role, dept, cap, cost, bill, type, company, unit, status, notes) {
       return { id: uid("r"), name: name, role: role, dept: dept, capacityHrs: cap, costRate: cost, billRate: bill, type: type || "Employee", company: company || "Techniek", unit: unit || "hour", status: status || "Active", notes: notes || "" };
@@ -679,7 +711,11 @@
   }
 
   /* ----------------------------------------------------------------------- *
-   * State management + persistence + undo/redo
+   * State management + persistence + undo/redo (v6.0.0)
+   * ----------------------------------------------------------------------- *
+   * Replaces the pure localStorage implementation. state is still held in
+   * memory and saved to a local cache synchronously so the UI stays fast,
+   * but it syncs to the Cloudflare API in the background.
    * ----------------------------------------------------------------------- */
   var state = null;          // current workspace
   var undoStack = [];
@@ -688,17 +724,124 @@
              collapsed: {}, reveal: {}, colFilter: {} };
   var accounts = null;       // { users: [...], currentUserId }
 
+  var syncState = {
+    status: 'local', // local, syncing, synced, offline, conflict, error, pending
+    lastSyncTime: null,
+    pendingTimer: null,
+    inFlight: false,
+    serverRev: 0
+  };
+
+  // What the server says about the signed-in person. Until /api/me answers,
+  // the app behaves exactly as it always has: local-only.
+  var serverSession = { active: false, email: "", status: "", role: "", workspaceId: null };
+
+  // When an administrator opens someone else's workspace, reads and writes are
+  // routed to the audited admin endpoints instead of "my workspace". Null means
+  // the normal case: you are working on your own.
+  var adminWorkspace = null;   // { id, ownerEmail, ownerName }
+
+  function workspaceEndpoint() {
+    return adminWorkspace
+      ? "/api/admin/workspace?id=" + encodeURIComponent(adminWorkspace.id)
+      : "/api/workspace";
+  }
+
+  // Account administration is server-authoritative; nothing here is trusted
+  // by the API, which re-checks the caller's role on every request.
+  var adminState = { users: [], loaded: false, loading: false, error: "", filter: "", pendingCount: 0,
+                     requests: [], requestsLoaded: false, requestsLoading: false,
+                     workspaces: [], workspacesLoaded: false, workspacesLoading: false };
+
+  function isServerAdmin() {
+    return serverSession.active && serverSession.role === "Admin";
+  }
+
+  // The trial is the app's existing local-only mode on a public URL: demo data,
+  // no persistence, no network. Everything that needs an account — saved work,
+  // your own procedure library, the cited Assistant — is simply absent rather
+  // than half-working.
+  function isTrialMode() {
+    try { return /^\/try\/?$/.test(location.pathname); } catch (e) { return false; }
+  }
+
+  function renderTrialBanner() {
+    if (document.getElementById("trialBanner")) return;
+    var bar = el("div", { id: "trialBanner", class: "warn-banner" });
+    bar.innerHTML =
+      "<strong>Demo mode</strong> — sample data, nothing is saved, and this closes when you leave. " +
+      "<a href='/request-access'>Request an account</a> to work on real projects with your own procedures.";
+    var main = document.querySelector(".main");
+    if (main) main.insertBefore(bar, main.firstChild);
+  }
+
+  function renderSyncIndicator() {
+    var ind = document.getElementById('syncIndicator');
+    if (!ind) {
+      var topbar = document.querySelector('.topbar-actions');
+      if (topbar) {
+        ind = el("span", { id: "syncIndicator", class: "chip sm faint ml mr" });
+        topbar.insertBefore(ind, topbar.firstChild);
+      } else return;
+    }
+
+    var text = "Synced", icon = "✓", cls = "ok", title = "";
+    if (syncState.status === 'local') {
+      text = "Local only"; icon = "○"; cls = "faint";
+      title = "Not signed in to the server — this browser only.";
+    } else if (syncState.status === 'syncing') {
+      text = "Saving…"; icon = "↻"; cls = "info";
+    } else if (syncState.status === 'synced') {
+      title = "Saved to your account" + (syncState.serverRev ? " (rev " + syncState.serverRev + ")" : "");
+    } else if (syncState.status === 'offline') {
+      text = "Offline"; icon = "⚠"; cls = "warn";
+      title = "Saved in this browser. Will sync when the server is reachable.";
+    } else if (syncState.status === 'conflict') {
+      text = "Conflict"; icon = "✕"; cls = "warn";
+      title = "Someone else changed this workspace. Choose which copy to keep.";
+    } else if (syncState.status === 'pending') {
+      text = "Pending approval"; icon = "⏳"; cls = "warn";
+      title = "Your account is awaiting administrator approval. Work is saved locally.";
+    } else if (syncState.status === 'error') {
+      text = "Sync error"; icon = "⚠"; cls = "warn";
+    }
+
+    ind.textContent = icon + " " + text;
+    ind.className = "chip sm ml mr " + cls;
+    ind.title = title;
+  }
+
   // Per-user workspace storage key. Legacy single-user data lives at STORAGE_KEY.
   function wsKey(userId) { return userId ? STORAGE_KEY + "::" + userId : STORAGE_KEY; }
+  
   function load(userId) {
+    var loaded = null;
+    // migrate() calls helpers (resourceById, etc.) that read the global `state`,
+    // so point it at the incoming workspace for the duration of the migration.
+    // Without this, migrating a saved workspace throws and the data is discarded.
+    var prevState = state;
     try {
       var raw = localStorage.getItem(wsKey(userId)) || localStorage.getItem((userId ? LEGACY_STORAGE_KEY + "::" + userId : LEGACY_STORAGE_KEY));
       if (raw) {
         var parsed = JSON.parse(raw);
-        if (parsed && parsed.boards && parsed.cards) return migrate(parsed);
+        if (parsed && parsed.boards && parsed.cards) {
+          state = parsed;
+          loaded = migrate(parsed);
+        }
       }
-    } catch (e) { /* fall through to demo */ }
-    return demoWorkspace();
+    } catch (e) {
+      loaded = null;            // fall through to the demo workspace
+    } finally {
+      state = prevState;
+    }
+    if (!loaded) loaded = demoWorkspace();
+
+    // Hydrate from the server in the background; never block first paint.
+    // Until that finishes, `loaded` may be a throwaway demo workspace, so saves
+    // are suppressed — pushing it would race the real data back to the server.
+    if (serverSession.active) { syncState.hydrating = true; fetchFromServer(); }
+
+    return loaded;
   }
   // Industry-standard (PMI / ISO 31000) risk record: threat/opportunity, inherent
   // and residual (post-response) probability × impact, owner, response strategy,
@@ -730,6 +873,22 @@
 
   function migrate(ws) {
     if (!ws.version) ws.version = SCHEMA_VERSION;
+    
+    // Migrate to v6.0.0
+    if (ws.version < "6.0.0") {
+      ws.rev = ws.rev || 1;
+    }
+    
+    // Migrate v4
+    if (ws.version < "5.0.0") {
+      ws.pmDeliverables = ws.pmDeliverables || [];
+      ws.actionItems = ws.actionItems || [];
+      // Clean up orphaned vector store data from v4 that was removed in 5.2.0
+      delete ws.vectorStoreFiles;
+      delete ws.ragQueries;
+      delete ws.sharePointProcedures;
+    }
+
     if (!ws.settings) ws.settings = { role: "Department Manager", theme: "dark" };
     if (ws.settings.compact == null) ws.settings.compact = false;
     if (ws.settings.targetContributionMarginPct == null) ws.settings.targetContributionMarginPct = DEFAULT_TARGET_CM_PCT;
@@ -790,6 +949,9 @@
     return out;
   }
   function ensureV38SampleProjects(ws) {
+    // A workspace started blank by a new user must stay blank — otherwise the
+    // demo projects reappear on every load and the setup checklist is a lie.
+    if (ws.blankStart) return;
     ws.projects = ws.projects || [];
     ws.cards = ws.cards || [];
     ws.boards = ws.boards || [];
@@ -841,6 +1003,7 @@
   // Repair already-seeded sample projects so Manual / Kanban demos stay
   // production-consistent across upgrades (dependency order + stage geometry).
   function repairSampleProjectConsistency(ws) {
+    if (ws.blankStart) return;
     ws.projects = ws.projects || [];
     ws.cards = ws.cards || [];
     ws.boards = ws.boards || [];
@@ -901,9 +1064,125 @@
   function save() {
     state.savedAt = Date.now();
     updateHistoryCheckpoint();
+    
+    // Save to local cache synchronously
     try { localStorage.setItem(wsKey(accounts && accounts.currentUserId), JSON.stringify(state)); }
-    catch (e) { toast("Could not save to localStorage", "err"); }
+    catch (e) { toast("Could not save to local cache", "err"); }
+    
     updateSavedStamp();
+
+    // Push to the server on a debounce so a drag or a burst of keystrokes is
+    // one request, not fifty. The local write above already happened, so the
+    // UI never waits on the network.
+    if (!serverSession.active || syncState.hydrating) { renderSyncIndicator(); return; }
+    if (syncState.pendingTimer) clearTimeout(syncState.pendingTimer);
+    syncState.pendingTimer = setTimeout(pushToServer, 1500);
+    syncState.status = 'syncing';
+    renderSyncIndicator();
+  }
+
+  function cacheLocal() {
+    try { localStorage.setItem(wsKey(accounts && accounts.currentUserId), JSON.stringify(state)); } catch (e) {}
+  }
+
+  async function fetchFromServer() {
+    if (!serverSession.active) return;
+    try {
+      var res = await fetch(workspaceEndpoint());
+      if (res.status === 403) { syncState.status = 'pending'; renderSyncIndicator(); return; }
+      if (!res.ok) throw new Error("Server returned " + res.status);
+
+      var data = await res.json();
+      syncState.serverRev = data.rev || 0;
+
+      if (data.state) {
+        // The server copy wins on load; the local cache is just a fast start.
+        state = migrate(data.state);
+        state.rev = data.rev;
+        cacheLocal();
+        render();
+        syncState.hydrating = false;
+      } else {
+        // Nothing stored for this account yet. A genuinely new user starts
+        // blank and is guided through setup rather than inheriting a demo
+        // portfolio. But if this browser already holds a workspace for them,
+        // that is real work — seed the account from it instead of wiping it.
+        var cached = null;
+        try { cached = localStorage.getItem(wsKey(accounts && accounts.currentUserId)); } catch (e) {}
+        if (!cached) state = blankWorkspace();
+        syncState.hydrating = false;
+        render();
+        pushToServer();
+        return;
+      }
+      syncState.status = 'synced';
+      syncState.lastSyncTime = Date.now();
+    } catch (err) {
+      console.warn("Workspace fetch failed:", err);
+      syncState.status = 'offline';
+    } finally {
+      syncState.hydrating = false;
+    }
+    renderSyncIndicator();
+  }
+
+  async function pushToServer() {
+    if (!serverSession.active || syncState.inFlight) return;
+    syncState.inFlight = true;
+    try {
+      var res = await fetch(workspaceEndpoint(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: state, rev: syncState.serverRev })
+      });
+
+      if (res.ok) {
+        var data = await res.json();
+        syncState.serverRev = data.rev;
+        state.rev = data.rev;
+        cacheLocal();
+        syncState.status = 'synced';
+        syncState.lastSyncTime = Date.now();
+      } else if (res.status === 409) {
+        var conflict = await res.json();
+        syncState.status = 'conflict';
+        renderSyncIndicator();
+        resolveConflict(conflict);
+        return;
+      } else if (res.status === 403) {
+        syncState.status = 'pending';
+      } else {
+        syncState.status = 'error';
+      }
+    } catch (err) {
+      console.warn("Workspace save failed:", err);
+      syncState.status = 'offline';
+    } finally {
+      syncState.inFlight = false;
+      renderSyncIndicator();
+    }
+  }
+
+  // Never resolve a conflict silently — losing a colleague's work without
+  // telling anyone is worse than asking.
+  function resolveConflict(conflict) {
+    confirmModal(
+      "This workspace changed elsewhere",
+      "Another session saved revision " + conflict.rev + " while you were working. " +
+      "Load their version (your unsaved changes here are discarded), or cancel to keep " +
+      "yours on screen and export it first from Settings & Data.",
+      function () {
+        state = migrate(conflict.state);
+        syncState.serverRev = conflict.rev;
+        state.rev = conflict.rev;
+        cacheLocal();
+        undoStack.length = 0; redoStack.length = 0;
+        render();
+        syncState.status = 'synced';
+        renderSyncIndicator();
+        toast("Loaded revision " + conflict.rev + " from the server", "ok");
+      }
+    );
   }
   // Keep the current week's completion checkpoint live so card create/move/edit
   // immediately flows into the dashboard trend and reports (PMI progress tracking).
@@ -2190,6 +2469,970 @@
     return { dimensions: dims, overall: { score: overall, grade: grade(overall) }, findings: F.length };
   }
 
+  /* ----------------------------------------------------------------------- *
+   * PM Assistant — deterministic evidence pack
+   * ----------------------------------------------------------------------- *
+   * Everything the Assistant is allowed to reason over is assembled here, from
+   * data the application already computed. Nothing in this file calls a model.
+   * If an LLM is configured it only arranges these facts into prose; a number
+   * that is not in this pack cannot legitimately appear in an answer, and the
+   * renderer flags it if one does.
+   * ----------------------------------------------------------------------- */
+
+  // Deterministic question routing. Keyword-based on purpose: the same question
+  // must produce the same pack every time, offline, with no model call — and it
+  // has to be testable in the QA suite without a network.
+  var ASSISTANT_ROUTES = [
+    { dimension: "Schedule", words: ["schedule", "late", "delay", "deadline", "due", "overdue", "slip", "spi", "critical path", "milestone", "on time", "finish", "duration"] },
+    { dimension: "Cost",     words: ["cost", "budget", "overrun", "cpi", "eac", "burn", "spend", "spent", "variance", "forecast", "funded", "estimate at completion"] },
+    { dimension: "Margin",   words: ["margin", "profit", "profitable", "profitability", "multiplier", "rate", "billable", "revenue", "earned", "write-off", "realization"] },
+    { dimension: "Flow",     words: ["flow", "wip", "work in progress", "bottleneck", "cycle time", "lead time", "throughput", "aging", "stuck", "blocked", "kanban", "pull", "queue"] },
+    { dimension: "Risk",     words: ["risk", "threat", "opportunity", "mitigation", "exposure", "contingency", "issue", "register"] },
+    { dimension: "Resource", words: ["resource", "staff", "staffing", "capacity", "allocation", "overallocated", "over-allocated", "utilization", "workload", "team", "people", "assign"] },
+    { dimension: "Governance", words: ["change order", "change control", "ccb", "approval", "governance", "scope creep", "baseline", "decision"] },
+  ];
+
+  function assistantRouteDimensions(question) {
+    var q = " " + String(question || "").toLowerCase() + " ";
+    var hits = ASSISTANT_ROUTES
+      .map(function (r) {
+        var score = r.words.reduce(function (a, w) { return a + (q.indexOf(w) !== -1 ? 1 : 0); }, 0);
+        return { dimension: r.dimension, score: score };
+      })
+      .filter(function (r) { return r.score > 0; })
+      .sort(function (a, b) { return b.score - a.score; });
+
+    // An unroutable question gets the dimensions that currently have the worst
+    // findings, so "how is my project doing?" still lands on real problems.
+    if (!hits.length) {
+      var health = advisorHealth();
+      return ADVISOR_DIMENSIONS
+        .slice()
+        .sort(function (a, b) { return health.dimensions[a].score - health.dimensions[b].score; })
+        .slice(0, 3);
+    }
+    return hits.slice(0, 3).map(function (r) { return r.dimension; });
+  }
+
+  // Named, addressable levers — the difference between "consider rebalancing
+  // resources" and "pull Diego Romero off Sensor harness routing".
+  function assistantLevers(dimensions, projects) {
+    var inScope = projects && projects.length
+      ? projects.reduce(function (acc, p) { acc[p.id] = true; return acc; }, {})
+      : null;
+    var cards = (inScope ? state.cards.filter(function (c) { return inScope[c.projectId]; }) : state.cards)
+      .filter(function (c) { return !isDone(c); });
+    var levers = { cards: [], resources: [], changeOrders: [] };
+
+    if (dimensions.indexOf("Flow") !== -1 || dimensions.indexOf("Schedule") !== -1) {
+      levers.cards = cards.slice()
+        .sort(function (a, b) { return cardAgeDays(b) - cardAgeDays(a); })
+        .slice(0, 8)
+        .map(function (c) {
+          var col = (state.boards.filter(function (b) { return b.id === c.boardId; })[0] || { columns: [] })
+            .columns.filter(function (x) { return x.id === c.columnId; })[0];
+          return { id: c.id, title: c.title, stage: col ? col.name : "", ageDays: cardAgeDays(c),
+                   progress: c.progress || 0, estimateHours: c.estimateHours || 0, due: c.due || "" };
+        });
+    }
+
+    if (dimensions.indexOf("Resource") !== -1 || dimensions.indexOf("Margin") !== -1 || dimensions.indexOf("Schedule") !== -1) {
+      // Only people actually holding open work on the selected project. Naming
+      // the portfolio's busiest engineer in advice about a project they are not
+      // staffed on is worse than naming nobody.
+      var onProject = null;
+      if (inScope) {
+        onProject = {};
+        cards.forEach(function (c) {
+          (c.resourceAssignments || []).forEach(function (a) { if (a.resourceId) onProject[a.resourceId] = true; });
+          if (c.assigneeId) onProject[c.assigneeId] = true;
+        });
+      }
+      levers.resources = (state.resources || [])
+        .filter(function (r) { return !onProject || onProject[r.id]; })
+        // resourceUtil().util is already a percentage — the rest of the app
+        // compares it against the 110% over-allocation threshold directly.
+        .map(function (r) {
+          var u = resourceUtil(r);
+          return { id: r.id, name: r.name, role: r.role,
+                   utilPct: Math.round(u.util), overAllocated: u.util > 110,
+                   remainingHours: Math.round(u.allocated), capacityHrs: u.capacity };
+        })
+        .filter(function (r) { return r.utilPct > 0; })
+        .sort(function (a, b) { return b.utilPct - a.utilPct; })
+        .slice(0, 8);
+    }
+
+    if (dimensions.indexOf("Governance") !== -1) {
+      levers.changeOrders = (state.changeOrders || [])
+        .filter(function (co) { return !inScope || inScope[co.projectId]; })
+        .filter(function (co) { return co.status === "Requested" || co.status === "Under Review"; })
+        .slice(0, 8)
+        .map(function (co) { return { id: co.id, number: co.number, title: co.title, status: co.status,
+                                      budgetDelta: co.budgetDelta || 0, scheduleDeltaDays: co.scheduleDeltaDays || 0 }; });
+    }
+
+    return levers;
+  }
+
+  function assistantMetrics(projects) {
+    var m = {};
+    if (projects && projects.length) {
+      // EVM aggregates on the cost basis, so several projects sum before the
+      // indices are derived — averaging CPI across projects would be wrong.
+      var bac = 0, ev = 0, ac = 0, pv = 0, eac = 0, cards = 0, done = 0, overdue = 0, budget = 0;
+      projects.forEach(function (p) {
+        var e = projectEVM(p), r = projectRollup(p);
+        bac += e.bac || 0; ev += e.ev || 0; ac += e.ac || 0; pv += e.pv || 0; eac += e.eac || 0;
+        cards += r.cards; done += r.done; overdue += r.overdue; budget += p.budget || 0;
+      });
+      m.scope = projects.length === 1 ? "project" : "projects";
+      m.projectNames = projects.map(function (p) { return p.name; }).join(", ");
+      m.projectCount = projects.length;
+      m.cpi = ac > 0 ? Number((ev / ac).toFixed(2)) : null;
+      m.spi = pv > 0 ? Number((ev / pv).toFixed(2)) : null;
+      m.bac = Math.round(bac);
+      m.ev = Math.round(ev);
+      m.ac = Math.round(ac);
+      m.pv = Math.round(pv);
+      m.eac = Math.round(eac);
+      m.cards = cards;
+      m.done = done;
+      m.overdue = overdue;
+      m.budget = Math.round(budget);
+    } else {
+      var t = portfolioTotals();
+      m.scope = "portfolio";
+      m.cards = t.cards;
+      m.done = t.done;
+      m.dueSoon = t.dueSoon;
+      m.overdue = t.overdue;
+      m.projects = state.projects.length;
+      m.contributionMarginPct = t.contributionMargin != null ? Number((t.contributionMargin * 100).toFixed(1)) : null;
+      m.earnedRevenue = Math.round(t.earnedRevenue || 0);
+      m.billableSpent = Math.round(t.billableSpent || 0);
+    }
+    return m;
+  }
+
+  /**
+   * The single authoritative context for any Assistant answer. Pure: no network,
+   * no model, no DOM. QA can assert on it directly.
+   */
+  function assistantEvidencePack(question, opts) {
+    opts = opts || {};
+    // One project, several, or none (the whole portfolio).
+    var ids = opts.projectIds || (opts.projectId ? [opts.projectId] : []);
+    var projects = ids.map(projectById).filter(Boolean);
+    var inScope = projects.reduce(function (acc, p) { acc[p.id] = true; return acc; }, {});
+
+    var dimensions = assistantRouteDimensions(question);
+    var allFindings = advisorFindings();
+    var health = advisorHealth(allFindings);
+
+    // Portfolio-wide findings (stale risk register, firm-level over-allocation)
+    // carry no projectId. They still bear on a project view, so they are kept
+    // rather than filtered away.
+    var scoped = projects.length
+      ? allFindings.filter(function (f) {
+          var pid = (f.drill || {}).projectId;
+          return !pid || inScope[pid];
+        })
+      : allFindings;
+
+    var findings = scoped.filter(function (f) { return dimensions.indexOf(f.dimension) !== -1; });
+    // A question that routes somewhere clean still deserves the worst problems
+    // in scope rather than an empty answer.
+    if (!findings.length) findings = scoped.slice(0, 5);
+
+    return {
+      question: String(question || ""),
+      askedAt: new Date().toISOString(),
+      dimensions: dimensions,
+      scope: projects.length
+        ? { projectIds: projects.map(function (p) { return p.id; }),
+            name: projects.map(function (p) { return p.name; }).join(" + ") }
+        : { projectIds: [], name: "Whole portfolio" },
+      metrics: assistantMetrics(projects),
+      health: { overall: health.overall, dimensions: dimensions.reduce(function (acc, d) { acc[d] = health.dimensions[d]; return acc; }, {}) },
+      findings: findings
+        // Worst first, so a truncated pack keeps the problems that matter.
+        .slice()
+        .sort(function (a, b) {
+          var rank = { critical: 0, warn: 1, info: 2 };
+          return (rank[a.severity] - rank[b.severity]);
+        })
+        .slice(0, 8)
+        .map(function (f) {
+          return { id: f.id, severity: f.severity, dimension: f.dimension,
+                   title: f.title, evidence: f.evidence, action: f.action };
+        }),
+      levers: assistantLevers(dimensions, projects),
+    };
+  }
+
+  /**
+   * Attach the governing clause to each finding.
+   *
+   * The query is the finding itself — its title carries the condition and its
+   * evidence carries the numbers — filtered to that finding's dimension, which
+   * is load-bearing: unfiltered semantic search confuses the "Recommended
+   * response" section that every procedure has. A finding with no match is
+   * reported as a genuine gap rather than padded with the nearest paragraph.
+   */
+  async function assistantGroundPack(pack) {
+    if (!serverSession.active) {
+      pack.clauses = [];
+      pack.retrieval = { available: false, reason: "Sign in to search your procedures." };
+      return pack;
+    }
+    var out = [];
+    var gaps = [];
+    for (var i = 0; i < pack.findings.length; i++) {
+      var f = pack.findings[i];
+      try {
+        var res = await fetch("/api/guidelines/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: f.title + " " + f.evidence, dimension: f.dimension, limit: 2 })
+        });
+        if (!res.ok) throw new Error("search returned " + res.status);
+        var data = await res.json();
+        if (data.matches && data.matches.length) {
+          out.push({ findingId: f.id, matches: data.matches });
+        } else {
+          gaps.push({ findingId: f.id, dimension: f.dimension, title: f.title });
+        }
+      } catch (err) {
+        pack.retrieval = { available: false, reason: String(err.message || err) };
+        return pack;
+      }
+    }
+    pack.clauses = out;
+    // Conditions your procedures do not cover are the useful half of the answer.
+    pack.gaps = gaps;
+    pack.retrieval = { available: true, grounded: out.length, ungrounded: gaps.length };
+    return pack;
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * PM Assistant — claim validation
+   * ----------------------------------------------------------------------- *
+   * A prompt is guidance, not a guarantee. Every figure the model states is
+   * checked against the evidence pack before rendering, and every citation must
+   * resolve to a clause that was actually retrieved. Anything that fails is
+   * shown as flagged, never silently dropped and never silently trusted.
+   * ----------------------------------------------------------------------- */
+
+  // Numbers that carry no claim: ordinals, percentages of 100, list markers.
+  function assistantNumbersIn(text) {
+    var found = String(text || "").match(/-?\$?\d[\d,]*\.?\d*%?/g) || [];
+    return found
+      .map(function (n) { return n.replace(/[$,%]/g, "").replace(/,/g, "").replace(/\.0+$/, ""); })
+      .filter(function (n) { return n !== "" && Math.abs(parseFloat(n)) >= 2; });
+  }
+
+  function assistantKnownNumbers(pack) {
+    var known = new Set();
+    function add(v) {
+      if (v === null || v === undefined) return;
+      var s = String(v).replace(/[$,%]/g, "").replace(/,/g, "").replace(/\.0+$/, "");
+      if (s !== "") known.add(s);
+      var n = parseFloat(s);
+      if (!isNaN(n)) { known.add(String(Math.round(n))); known.add(String(Math.abs(Math.round(n)))); }
+    }
+    Object.keys(pack.metrics || {}).forEach(function (k) { add(pack.metrics[k]); });
+    if (pack.health && pack.health.overall) add(pack.health.overall.score);
+    (pack.findings || []).forEach(function (f) {
+      assistantNumbersIn(f.title).forEach(add);
+      assistantNumbersIn(f.evidence).forEach(add);
+    });
+    ((pack.levers || {}).cards || []).forEach(function (c) {
+      add(c.ageDays); add(c.progress); add(c.estimateHours);
+    });
+    ((pack.levers || {}).resources || []).forEach(function (r) {
+      add(r.utilPct); add(r.remainingHours); add(r.capacityHrs);
+    });
+    ((pack.levers || {}).changeOrders || []).forEach(function (c) {
+      add(c.budgetDelta); add(c.scheduleDeltaDays);
+    });
+    (pack.clauses || []).forEach(function (g) {
+      g.matches.forEach(function (m) { assistantNumbersIn(m.passage).forEach(add); });
+    });
+    return known;
+  }
+
+  function assistantValidate(answer, pack) {
+    var known = assistantKnownNumbers(pack);
+    var clauseIndex = {};
+    (pack.clauses || []).forEach(function (g) {
+      g.matches.forEach(function (m) { clauseIndex[m.chunkId] = m; });
+    });
+    var leverIndex = {};
+    ((pack.levers || {}).cards || []).forEach(function (c) { leverIndex[c.id] = { kind: "card", label: c.title }; });
+    ((pack.levers || {}).resources || []).forEach(function (r) { leverIndex[r.id] = { kind: "resource", label: r.name }; });
+    ((pack.levers || {}).changeOrders || []).forEach(function (c) { leverIndex[c.id] = { kind: "changeOrder", label: c.title }; });
+
+    var unsupported = [];
+    function checkText(text, where) {
+      assistantNumbersIn(text).forEach(function (n) {
+        if (!known.has(n)) unsupported.push({ value: n, where: where });
+      });
+    }
+
+    checkText(answer.headline, "headline");
+    checkText(answer.situation, "situation");
+
+    var moves = (answer.moves || []).map(function (m, i) {
+      checkText(m.action, "move " + (i + 1));
+      checkText(m.effect, "move " + (i + 1) + " effect");
+      var cites = (m.clauseIds || []).map(function (id) {
+        return clauseIndex[id] ? { ok: true, clause: clauseIndex[id] } : { ok: false, id: id };
+      });
+      var levers = (m.leverIds || []).map(function (id) {
+        return leverIndex[id] ? { ok: true, id: id, label: leverIndex[id].label, kind: leverIndex[id].kind }
+                              : { ok: false, id: id };
+      });
+      return { action: m.action || "", effect: m.effect || "", tradeoff: m.tradeoff || "",
+               citations: cites, levers: levers };
+    });
+
+    (answer.avoid || []).forEach(function (a, i) { checkText(a, "avoid " + (i + 1)); });
+
+    return {
+      headline: answer.headline || "",
+      situation: answer.situation || "",
+      moves: moves,
+      avoid: answer.avoid || [],
+      gaps: answer.gaps || [],
+      unsupported: unsupported,
+      droppedCitations: moves.reduce(function (a, m) {
+        return a + m.citations.filter(function (c) { return !c.ok; }).length;
+      }, 0),
+    };
+  }
+
+  /**
+   * Deterministic answer. Composed from the same pack with no model involved,
+   * so the Assistant still works with nothing configured — the product's
+   * premise is that the AI layer is an enhancement, not a dependency.
+   */
+  function assistantDeterministicAnswer(pack) {
+    var crit = pack.findings.filter(function (f) { return f.severity === "critical"; });
+    var lead = crit[0] || pack.findings[0];
+    var clauseFor = {};
+    (pack.clauses || []).forEach(function (g) { clauseFor[g.findingId] = g.matches[0]; });
+
+    return {
+      headline: lead
+        ? lead.title + " is the condition to address first."
+        : "No findings in " + pack.dimensions.join(", ") + " for this scope.",
+      situation: lead ? lead.evidence : "The deterministic inspection found nothing in these dimensions.",
+      moves: pack.findings.slice(0, 4).map(function (f) {
+        var m = clauseFor[f.id];
+        return {
+          action: f.action || f.title,
+          effect: f.evidence,
+          tradeoff: "",
+          citations: m ? [{ ok: true, clause: m }] : [],
+          levers: [],
+        };
+      }),
+      avoid: [],
+      gaps: (pack.gaps || []).map(function (g) { return "No procedure covers: " + g.title; }),
+      unsupported: [],
+      droppedCitations: 0,
+      deterministic: true,
+    };
+  }
+
+  /* ---------- PM Assistant surface ---------- */
+  var assistantUi = { question: "", running: false, result: null, pack: null, error: "", model: "" };
+
+  var ASSISTANT_EXAMPLES = [
+    "How can I improve schedule?",
+    "How can I make my project more profitable?",
+    "Where am I carrying the most risk?",
+    "Who is over-allocated and what should I move?",
+  ];
+
+  async function runAssistant(question) {
+    assistantUi.question = question;
+    assistantUi.running = true;
+    assistantUi.error = "";
+    assistantUi.result = null;
+    render();
+
+    try {
+      var pack = assistantEvidencePack(question, { projectIds: assistantSelectedIds() });
+      pack = await assistantGroundPack(pack);
+      assistantUi.pack = pack;
+
+      var used = null;
+      if (serverSession.active) {
+        var res = await fetch("/api/assistant/advise", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pack: pack })
+        });
+        var data = await res.json();
+        if (data.ok) {
+          used = assistantValidate(data.answer, pack);
+          assistantUi.model = data.model || "";
+        } else if (data.configured === false) {
+          assistantUi.error = "";   // expected: fall back quietly
+        } else {
+          // Say what failed and what to do about it; the deterministic answer
+          // below is still a complete, cited answer, not a stub.
+          assistantUi.error = (data.error || "The model could not answer.") +
+            " Showing the deterministic answer instead.";
+        }
+      }
+      // No model, not configured, or the call failed — the deterministic answer
+      // is the product's default path, not a degraded mode.
+      assistantUi.result = used || assistantDeterministicAnswer(pack);
+      // Every suggestion should point at something in the user's own library.
+      await assistantBackfillCitations(assistantUi.result, pack);
+      if (!state.settings.onboardingAsked) { state.settings.onboardingAsked = true; save(); }
+    } catch (err) {
+      assistantUi.error = String(err.message || err);
+      if (assistantUi.pack) assistantUi.result = assistantDeterministicAnswer(assistantUi.pack);
+    } finally {
+      assistantUi.running = false;
+      render();
+    }
+  }
+
+  /**
+   * Per-project signal row for the picker. Shows the variance up front — CPI,
+   * SPI, margin, peak resource load, open findings — so the manager can see
+   * which project is worth asking about without opening each one (heuristics 1
+   * and 6: status visible on the surface, recognition rather than recall).
+   */
+  function assistantProjectSignals() {
+    var findings = advisorFindings();
+    return state.projects.map(function (p) {
+      var evm = projectEVM(p);
+      var roll = projectRollup(p);
+      var mine = findings.filter(function (f) { return (f.drill || {}).projectId === p.id; });
+
+      // Peak utilization among people actually holding open work on this project.
+      var ids = {};
+      state.cards.filter(function (c) { return c.projectId === p.id && !isDone(c); })
+        .forEach(function (c) {
+          (c.resourceAssignments || []).forEach(function (a) { if (a.resourceId) ids[a.resourceId] = true; });
+          if (c.assigneeId) ids[c.assigneeId] = true;
+        });
+      var peak = 0, peakName = "";
+      Object.keys(ids).forEach(function (rid) {
+        var r = resourceById(rid); if (!r) return;
+        var u = resourceUtil(r).util;
+        if (u > peak) { peak = u; peakName = r.name; }
+      });
+
+      return {
+        id: p.id,
+        name: p.name,
+        cpi: evm.cpi != null ? Number(evm.cpi.toFixed(2)) : null,
+        spi: evm.spi != null ? Number(evm.spi.toFixed(2)) : null,
+        cmPct: roll.contributionMargin != null ? roll.contributionMargin * 100 : null,
+        peakUtil: Math.round(peak),
+        peakName: peakName,
+        critical: mine.filter(function (f) { return f.severity === "critical"; }).length,
+        warn: mine.filter(function (f) { return f.severity === "warn"; }).length,
+        cards: roll.cards,
+        overdue: roll.overdue,
+      };
+    }).sort(function (a, b) { return (b.critical * 10 + b.warn) - (a.critical * 10 + a.warn); });
+  }
+
+  function assistantSelectedIds() {
+    return (ui.assistantProjectIds || []).filter(function (id) { return !!projectById(id); });
+  }
+
+  function renderAssistantProjectPicker(host) {
+    var rows = assistantProjectSignals();
+    var target = state.settings.targetContributionMarginPct != null
+      ? state.settings.targetContributionMarginPct : DEFAULT_TARGET_CM_PCT;
+    var selected = assistantSelectedIds();
+    var selectedMap = selected.reduce(function (a, id) { a[id] = true; return a; }, {});
+
+    var tbl = el("table", { class: "table" });
+    tbl.innerHTML = "<thead><tr><th style='width:34px'></th><th>Project</th><th class='num'>CPI</th>" +
+      "<th class='num'>SPI</th><th class='num'>Margin</th><th>Peak load</th><th>Open findings</th></tr></thead>";
+    var tb = el("tbody");
+
+    function cls(ok, warn) { return ok ? "ok" : warn ? "warn" : "danger"; }
+
+    rows.forEach(function (r) {
+      var on = !!selectedMap[r.id];
+      var tr = el("tr", { class: on ? "active-row" : "" });
+
+      var pick = el("td");
+      var box = el("input", { type: "checkbox", class: "checkbox" });
+      box.checked = on;
+      box.addEventListener("change", function () {
+        var ids = assistantSelectedIds();
+        ui.assistantProjectIds = this.checked
+          ? ids.concat([r.id])
+          : ids.filter(function (x) { return x !== r.id; });
+        assistantUi.result = null;
+        render();
+      });
+      pick.appendChild(box);
+      tr.appendChild(pick);
+
+      tr.appendChild(el("td", null, "<strong>" + esc(r.name) + "</strong>" +
+        "<div class='faint'>" + r.cards + " items · " + r.overdue + " overdue</div>"));
+
+      tr.appendChild(el("td", { class: "num " + (r.cpi == null ? "muted" : cls(r.cpi >= 1, r.cpi >= 0.9)) },
+        r.cpi == null ? "—" : r.cpi.toFixed(2)));
+      tr.appendChild(el("td", { class: "num " + (r.spi == null ? "muted" : cls(r.spi >= 1, r.spi >= 0.9)) },
+        r.spi == null ? "—" : r.spi.toFixed(2)));
+      tr.appendChild(el("td", { class: "num " + (r.cmPct == null ? "muted" : cls(r.cmPct >= target, r.cmPct >= target - 10)) },
+        r.cmPct == null ? "—" : r.cmPct.toFixed(0) + "%"));
+
+      tr.appendChild(el("td", { class: r.peakUtil > 110 ? "danger" : r.peakUtil > 90 ? "warn" : "muted" },
+        r.peakUtil ? esc(r.peakName) + " " + r.peakUtil + "%" : "—"));
+
+      tr.appendChild(el("td", null,
+        (r.critical ? "<span class='chip sm danger'>" + r.critical + " critical</span> " : "") +
+        (r.warn ? "<span class='chip sm warn'>" + r.warn + " warn</span>" : "") +
+        (!r.critical && !r.warn ? "<span class='chip sm ok'>clear</span>" : "")));
+
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    host.appendChild(tbl);
+
+    var foot = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    foot.appendChild(el("span", { class: "chip sm" + (selected.length ? "" : " ok") },
+      selected.length ? selected.length + " project(s) selected" : "Whole portfolio"));
+    if (selected.length) {
+      foot.appendChild(mkBtn("Clear selection", "btn sm ghost", function () {
+        ui.assistantProjectIds = []; assistantUi.result = null; render();
+      }));
+    }
+    foot.appendChild(mkBtn("Select all", "btn sm ghost", function () {
+      ui.assistantProjectIds = state.projects.map(function (p) { return p.id; });
+      assistantUi.result = null; render();
+    }));
+    host.appendChild(foot);
+
+    host.appendChild(el("p", { class: "hint mt" },
+      "Tick one project, several, or none for the whole portfolio. CPI and SPI below 1.00 mean cost and schedule " +
+      "are behind plan; margin is measured against your " + target + "% target; peak load above 110% is sustained " +
+      "over-allocation. Across several projects the earned-value figures are summed before the indices are derived."));
+  }
+
+  /**
+   * A suggestion with no citation is just an opinion. When the model cites
+   * nothing for a move, search the user's library with the move's own text and
+   * attach the governing clause. If the library genuinely has nothing, the card
+   * says so rather than quietly presenting uncited advice.
+   */
+  async function assistantBackfillCitations(result, pack) {
+    if (!serverSession.active || !result || !result.moves) return result;
+    for (var i = 0; i < result.moves.length; i++) {
+      var m = result.moves[i];
+      if ((m.citations || []).some(function (c) { return c.ok; })) continue;
+      try {
+        var res = await fetch("/api/guidelines/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: m.action + " " + (m.effect || ""),
+                                 dimension: (pack.dimensions || [])[0] || null, limit: 1 })
+        });
+        if (!res.ok) continue;
+        var data = await res.json();
+        if (data.matches && data.matches.length) {
+          m.citations = [{ ok: true, clause: data.matches[0], backfilled: true }];
+        }
+      } catch (err) { /* leave uncited; the card states that plainly */ }
+    }
+    return result;
+  }
+
+  /* ---------- Your procedure library (server-side, per user) ---------- */
+  var libraryUi = { docs: null, loading: false, error: "", busy: "" };
+
+  function libraryLoad(force) {
+    if (!serverSession.active) return;
+    if (libraryUi.loading || (libraryUi.docs && !force)) return;
+    libraryUi.loading = true;
+    fetch("/api/guidelines")
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("Server returned " + r.status)); })
+      .then(function (d) { libraryUi.docs = d.documents || []; libraryUi.error = ""; })
+      .catch(function (e) { libraryUi.error = e.message; libraryUi.docs = []; })
+      .then(function () {
+        libraryUi.loading = false;
+        onboardingDocCount = (libraryUi.docs || []).filter(function (x) { return x.mine; }).length;
+        // Repaint wherever the panel is currently shown.
+        if (ui.view === "settings" || ui.view === "advisor" || ui.view === "dashboard") render();
+      });
+  }
+
+  /**
+   * Upload markdown procedures into this user's own vector store. Frontmatter
+   * (id/title/source/revision/dimension/triggers) is parsed server-side, so a
+   * plain .md file works and a fully described one binds to findings better.
+   */
+  function libraryUploadPrompt() {
+    var input = el("input", { type: "file", accept: ".md,.markdown,.txt", multiple: "multiple" });
+    input.addEventListener("change", function () {
+      var files = Array.prototype.slice.call(input.files || []);
+      if (!files.length) return;
+      libraryUi.busy = "Uploading " + files.length + " file(s)…";
+      render();
+
+      var done = 0, failed = 0;
+      files.forEach(function (file) {
+        var reader = new FileReader();
+        reader.onload = function () {
+          var id = file.name.replace(/\.(md|markdown|txt)$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+          fetch("/api/guidelines", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: id, title: file.name.replace(/\.[^.]+$/, ""), markdown: String(reader.result) })
+          })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (res) {
+              if (!res.ok) { failed++; toast(file.name + ": " + (res.d.detail || res.d.error), "err"); }
+            })
+            .catch(function (e) { failed++; toast(file.name + ": " + e.message, "err"); })
+            .then(function () {
+              if (++done === files.length) {
+                libraryUi.busy = "";
+                toast((files.length - failed) + " procedure(s) added to your library", failed ? "err" : "ok");
+                libraryLoad(true);
+              }
+            });
+        };
+        reader.readAsText(file);
+      });
+    });
+    input.click();
+  }
+
+  function libraryRemove(doc) {
+    confirmModal("Remove “" + doc.title + "” from your library?",
+      "The Assistant will stop citing it. Nothing else in your workspace changes, and you can upload it again.",
+      function () {
+        fetch("/api/guidelines", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: doc.id })
+        }).then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) { toast(d.error, "err"); return; }
+            toast("Removed from your library", "ok");
+            libraryLoad(true);
+          })
+          .catch(function (e) { toast(e.message, "err"); });
+      });
+  }
+
+  function renderProcedureLibrary(root) {
+    if (!serverSession.active) return;
+    libraryLoad(false);
+
+    var docs = libraryUi.docs || [];
+    var mine = docs.filter(function (d) { return d.mine && d.origin !== "builtin"; });
+    var shared = docs.filter(function (d) { return !d.mine || d.origin === "builtin"; });
+
+    var wrap = el("details", { class: "mt" });
+    // On Settings this is the reason the user came; open it.
+    if (ui.view === "settings") wrap.open = true;
+    wrap.innerHTML = "<summary>Procedure management — " + mine.length +
+      " of your own, " + shared.length + " provided</summary>";
+
+    var panel = el("div", { class: "panel-pad" });
+    panel.appendChild(el("p", { class: "muted" },
+      "The Assistant cites these. Documents you upload are private to your account — no other user can " +
+      "retrieve them. Markdown files work as-is; adding frontmatter (id, title, source, revision, " +
+      "dimension, triggers) makes them bind to findings more precisely."));
+
+    var row = el("div", { class: "flex wrap mb", style: "gap:8px" });
+    row.appendChild(mkBtn(libraryUi.busy || "Upload procedures (.md)", "btn primary", libraryUploadPrompt));
+    row.appendChild(mkBtn("Refresh", "btn ghost", function () { libraryLoad(true); }));
+    panel.appendChild(row);
+
+    if (libraryUi.error) {
+      panel.appendChild(el("div", { class: "warn-banner mb" },
+        "Could not load your library: " + esc(libraryUi.error)));
+    }
+
+    var tbl = el("table", { class: "table table-dense" });
+    tbl.innerHTML = "<thead><tr><th>Procedure</th><th>Source</th><th>Revision</th>" +
+      "<th>Dimension</th><th class='num'>Sections</th><th>Visibility</th><th></th></tr></thead>";
+    var tb = el("tbody");
+
+    docs.forEach(function (d) {
+      var tr = el("tr");
+      tr.appendChild(el("td", null, "<strong>" + esc(d.title) + "</strong><div class='faint'>" + esc(d.id) + "</div>"));
+      tr.appendChild(el("td", { class: "muted" }, esc(d.source || "—")));
+      tr.appendChild(el("td", { class: "muted" }, esc(d.revision || "—")));
+      tr.appendChild(el("td", { class: "muted" }, esc(d.dimension || "—")));
+      tr.appendChild(el("td", { class: "num muted" }, String(d.chunks)));
+      tr.appendChild(el("td", null, "<span class='chip sm " + (d.visibility === "org" ? "" : "ok") + "'>" +
+        (d.visibility === "org" ? "provided to everyone" : "private to you") + "</span>"));
+      var act = el("td");
+      if (d.mine && d.origin !== "builtin") {
+        act.appendChild(mkBtn("Remove", "btn sm ghost", function () { libraryRemove(d); }));
+      }
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+
+    if (!docs.length) {
+      tb.appendChild(el("tr", null, "<td colspan='7' class='empty'>" +
+        (libraryUi.loading ? "Loading…" : "No procedures yet. Upload your own to have the Assistant cite them.") +
+        "</td>"));
+    }
+
+    tbl.appendChild(tb);
+    panel.appendChild(tbl);
+    wrap.appendChild(panel);
+    root.appendChild(wrap);
+  }
+
+  function renderAssistant(root) {
+    var selectedIds = assistantSelectedIds();
+    var scopeName = selectedIds.length
+      ? selectedIds.map(function (id) { return (projectById(id) || {}).name; }).filter(Boolean).join(" + ")
+      : "Whole portfolio";
+
+    var picker = el("div", { class: "panel panel-pad" });
+    picker.appendChild(el("h2", null, "1 · Choose the scope"));
+    renderAssistantProjectPicker(picker);
+    root.appendChild(picker);
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.appendChild(el("h2", null, "2 · Ask — " + esc(scopeName)));
+    panel.appendChild(el("p", { class: "muted" },
+      "Plain language. Answers are built from the metrics and findings this application computed for " +
+      esc(scopeName) + ", paired with clauses from your own procedure library — every figure is checked against " +
+      "that evidence before it is shown."));
+
+    var input = el("input", { class: "input", id: "assistantQ",
+      placeholder: "e.g. How can I improve schedule?  ·  How can I make my project more profitable?" });
+    input.value = assistantUi.question || "";
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && this.value.trim()) runAssistant(this.value.trim());
+    });
+    panel.appendChild(input);
+
+    var row = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    row.appendChild(mkBtn(assistantUi.running ? "Thinking…" : "Ask", "btn primary", function () {
+      var v = $("#assistantQ").value.trim();
+      if (v) runAssistant(v);
+    }));
+    ASSISTANT_EXAMPLES.forEach(function (ex) {
+      row.appendChild(mkBtn(ex, "btn sm ghost", function () { runAssistant(ex); }));
+    });
+    panel.appendChild(row);
+    root.appendChild(panel);
+
+    if (assistantUi.running) {
+      root.appendChild(el("div", { class: "panel panel-pad mt" },
+        "<p class='muted'>Assembling evidence, retrieving governing clauses…</p>"));
+      return;
+    }
+    if (assistantUi.error) {
+      root.appendChild(el("div", { class: "warn-banner mt" }, esc(assistantUi.error)));
+    }
+    if (!assistantUi.result) {
+      // Before a question is asked, show what the inspection already knows for
+      // this scope. The findings are the starting point, not a separate tab.
+      renderAssistantStandingEvidence(root, selectedIds);
+      return;
+    }
+
+    var a = assistantUi.result;
+    var pack = assistantUi.pack || {};
+    var out = el("div", { class: "panel panel-pad mt" });
+
+    out.appendChild(el("div", { class: "flex wrap mb", style: "gap:8px" },
+      "<span class='chip sm'>" + (pack.dimensions || []).join(" · ") + "</span>" +
+      "<span class='chip sm'>" + ((pack.findings || []).length) + " findings</span>" +
+      "<span class='chip sm'>" + ((pack.retrieval && pack.retrieval.grounded) || 0) + " clauses cited</span>"));
+
+    if (a.headline) out.appendChild(el("h2", null, esc(a.headline)));
+    if (a.situation) out.appendChild(el("p", null, esc(a.situation)));
+
+    (a.moves || []).forEach(function (m, i) {
+      var card = el("div", { class: "panel panel-pad mt" });
+      card.appendChild(el("h3", null, (i + 1) + ". " + esc(m.action)));
+      if (m.effect) card.appendChild(el("p", { class: "muted" }, "Expected effect: " + esc(m.effect)));
+      if (m.tradeoff) card.appendChild(el("p", { class: "muted" }, "Trade-off: " + esc(m.tradeoff)));
+
+      (m.levers || []).filter(function (l) { return l.ok; }).forEach(function (l) {
+        card.appendChild(el("span", { class: "chip sm" }, esc(l.label)));
+      });
+
+      var shown = (m.citations || []).filter(function (c) { return c.ok; });
+      shown.forEach(function (c) {
+        var cl = c.clause;
+        var cite = el("blockquote", { class: "mt" });
+        cite.appendChild(el("div", { class: "faint" },
+          esc(cl.title) + (cl.revision && cl.revision !== "—" ? " (rev " + esc(cl.revision) + ")" : "") +
+          " — " + esc(cl.heading || "")));
+        cite.appendChild(el("p", null, esc(cl.passage.slice(0, 700))));
+        card.appendChild(cite);
+      });
+      // Every suggestion is either backed by a clause from this user's library
+      // or says plainly that nothing in the library covers it.
+      if (!shown.length) {
+        card.appendChild(el("p", { class: "hint mt" },
+          "No procedure in your library covers this step — consider adding one."));
+      }
+      out.appendChild(card);
+    });
+
+    if ((a.avoid || []).length) {
+      var av = el("div", { class: "panel panel-pad mt" });
+      av.appendChild(el("h3", null, "Do not"));
+      var ul = el("ul");
+      a.avoid.forEach(function (x) { ul.appendChild(el("li", null, esc(x))); });
+      av.appendChild(ul);
+      out.appendChild(av);
+    }
+
+    if ((a.gaps || []).length) {
+      var gp = el("div", { class: "panel panel-pad mt" });
+      gp.appendChild(el("h3", null, "Not covered by your procedures"));
+      var gl = el("ul");
+      a.gaps.forEach(function (x) { gl.appendChild(el("li", null, esc(x))); });
+      gp.appendChild(gl);
+      gp.appendChild(el("p", { class: "hint" },
+        "These conditions are occurring on live work with no governing procedure. That is a gap register, not a failure of the search."));
+      out.appendChild(gp);
+    }
+
+    // The findings that produced this answer, shown as its evidence rather than
+    // hidden behind a tab the user has to go find.
+    var ev = el("details", { class: "mt" });
+    ev.innerHTML = "<summary>Evidence used — " + ((pack.findings || []).length) +
+      " finding(s) across " + ((pack.dimensions || []).join(", ")) + "</summary>";
+    var evBody = el("div", { class: "panel-pad" });
+    (pack.findings || []).forEach(function (f) {
+      evBody.appendChild(el("div", { class: "advisor-finding" },
+        "<div class='af-head'><span class='badge " +
+        (f.severity === "critical" ? "danger" : f.severity === "warn" ? "warn" : "neutral") + "'>" +
+        esc(f.severity) + "</span><span class='chip label'>" + esc(f.dimension) + "</span>" +
+        "<strong class='af-title'>" + esc(f.title) + "</strong></div>" +
+        "<div class='af-evidence'>" + esc(f.evidence) + "</div>"));
+    });
+    var mk = pack.metrics || {};
+    evBody.appendChild(el("p", { class: "hint mt" },
+      "Metrics in scope: " + Object.keys(mk).filter(function (k) { return mk[k] !== null && mk[k] !== ""; })
+        .map(function (k) { return k + " " + mk[k]; }).join(" · ")));
+
+    // Validation still runs on every answer; its result lives here rather than
+    // as a banner over the advice, where it alarmed without being actionable.
+    if ((a.unsupported && a.unsupported.length) || a.droppedCitations) {
+      evBody.appendChild(el("p", { class: "hint" },
+        "Validation: " + (a.unsupported.length || 0) + " figure(s) not found in the evidence" +
+        (a.unsupported.length ? " (" + esc(a.unsupported.map(function (u) { return u.value; }).join(", ")) + ")" : "") +
+        (a.droppedCitations ? " · " + a.droppedCitations + " unresolved citation(s) removed" : "") + "."));
+    }
+    if (assistantUi.model && !a.deterministic) {
+      evBody.appendChild(el("p", { class: "hint" }, "Synthesized by " + esc(assistantUi.model) + "."));
+    }
+    ev.appendChild(evBody);
+    out.appendChild(ev);
+
+    root.appendChild(out);
+
+    renderAssistantActions(root, pack);
+  }
+
+  /** Standing inspection for the current scope, before any question is asked. */
+  function renderAssistantStandingEvidence(root, selectedIds) {
+    var all = advisorFindings();
+    var inScope = selectedIds.reduce(function (a, id) { a[id] = true; return a; }, {});
+    var F = selectedIds.length
+      ? all.filter(function (f) { var pid = (f.drill || {}).projectId; return !pid || inScope[pid]; })
+      : all;
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.appendChild(el("h2", null, "What the inspection already found"));
+    panel.appendChild(el("p", { class: "muted" },
+      F.length + " open finding(s) in this scope. Ask a question above to get these bound to the clauses " +
+      "that govern them, or open one directly."));
+
+    F.slice(0, 12).forEach(function (f) {
+      var row = el("div", { class: "advisor-finding" });
+      row.innerHTML =
+        "<div class='af-head'><span class='badge " +
+        (f.severity === "critical" ? "danger" : f.severity === "warn" ? "warn" : "neutral") + "'>" +
+        esc(f.severity) + "</span><span class='chip label'>" + esc(f.dimension) + "</span>" +
+        "<strong class='af-title'>" + esc(f.title) + "</strong></div>" +
+        "<div class='af-evidence'>" + esc(f.evidence) + "</div>" +
+        "<div class='af-action'>" + esc(f.action) + "</div>";
+      var open = el("button", { class: "btn sm af-open" }, "Open");
+      open.addEventListener("click", function () { advisorDrill(f); });
+      row.appendChild(open);
+      panel.appendChild(row);
+    });
+    if (!F.length) panel.appendChild(el("div", { class: "empty" }, "Nothing flagged in this scope."));
+    root.appendChild(panel);
+  }
+
+  /**
+   * The act half of the old "Ask & Act" tab, kept on the same page: turn the
+   * findings behind this answer into validated actions through the existing
+   * plan → diff → approve pipeline. No second mutation route.
+   */
+  function renderAssistantActions(root, pack) {
+    if (!canEdit()) return;
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.appendChild(el("h3", null, "3 · Act on this"));
+    panel.appendChild(el("p", { class: "muted" },
+      "Proposals are validated against the same governance a human drag hits — WIP limits, evidence gates, " +
+      "dependency gates — and you approve a diff before anything changes."));
+    var row = el("div", { class: "flex wrap", style: "gap:8px" });
+    row.appendChild(mkBtn("Propose fixes from these findings", "btn", function () {
+      var actions = agentActionsFromFindings();
+      if (!actions.length) { toast("Nothing to propose — no actionable findings.", "err"); return; }
+      ui.agentPlan = agentPlan(actions);
+      ui.agentSource = "Derived from the findings behind this answer";
+      render();
+    }));
+    row.appendChild(mkBtn("Type a command instead", "btn ghost", function () {
+      ui.advisorShowCommand = !ui.advisorShowCommand; render();
+    }));
+    panel.appendChild(row);
+
+    if (ui.advisorShowCommand) {
+      var cmd = el("input", { class: "input mt", id: "assistantCmd",
+        placeholder: "e.g. move Sensor harness routing to Review · log 6 hours on Accessibility audit" });
+      cmd.value = ui.advisorCommandText || "";
+      cmd.addEventListener("keydown", function (e) {
+        if (e.key !== "Enter") return;
+        ui.advisorCommandText = this.value;
+        var parsed = agentParseCommand(this.value);
+        if (!parsed.matched) { toast("That phrasing was not recognized as a command.", "err"); return; }
+        ui.agentPlan = agentPlan(parsed.actions);
+        ui.agentSource = 'Command: "' + this.value + '"';
+        render();
+      });
+      panel.appendChild(cmd);
+      panel.appendChild(el("p", { class: "hint" },
+        "Commands are parsed deterministically — no AI service involved. " +
+        "move · set estimate/progress/priority/due · log N hours on · assign X to Y at N% · push/pull by N days · rebalance WIP."));
+    }
+
+    // Same validated plan → diff → approve pipeline the agent console uses.
+    if (ui.agentPlan) {
+      var planPanel = el("div", { class: "panel mt" });
+      renderAgentPlanPreview(planPanel, ui.agentPlan, ui.agentSource);
+      panel.appendChild(planPanel);
+    }
+    root.appendChild(panel);
+  }
+
   function advisorDrill(f) {
     var d = f.drill || {};
     if (d.cardId) {
@@ -2249,7 +3492,7 @@
   }
   function kbInvalidate() { kbPassages._cache = null; }
 
-  // BM25-style ranking: IDF-weighted term frequency with length normalisation.
+  // BM25-style ranking: IDF-weighted term frequency with length normalization.
   // Enough to rank a few hundred passages well, with no dependency.
   function kbSearch(query, limit) {
     var q = kbTokens(query);
@@ -2975,17 +4218,20 @@
   var VIEWS = {};
 
   VIEWS.advisor = function (root) {
-    var tab = ui.advisorTab || "Findings";
-    root.appendChild(pageHead("PM Advisor", "Deterministic portfolio inspection and an agent that can act on it — graded health, ranked findings, and changes applied through the same governance a human drag hits."));
-    var tabbar = el("div", { class: "flex wrap mb" });
-    ["Findings", "Ask & Act", "Procedure Q&A"].forEach(function (t) {
-      var b = el("button", { class: "btn sm" + (tab === t ? " primary" : " ghost") }, t);
-      b.addEventListener("click", function () { ui.advisorTab = t; render(); });
-      tabbar.appendChild(b);
-    });
-    root.appendChild(tabbar);
-    if (tab === "Ask & Act") return renderAgentConsole(root);
-    if (tab === "Procedure Q&A") return renderKnowledgeAnswer(root);
+    // One page, one question box. Previously this screen had four tabs, which
+    // forced the user to classify their own question before asking it — a
+    // procedure lookup, an analysis, or a command — and to know which tab held
+    // the project picker. The Assistant now answers all three from one input,
+    // scoped to whatever projects are selected, and the findings appear as the
+    // evidence behind the answer rather than as a separate destination.
+    root.appendChild(pageHead("PM Advisor",
+      "Ask about one project, several, or the whole portfolio. Answers are grounded in the metrics " +
+      "and findings this application computed, and cited from your own procedure library."));
+    return renderAssistant(root);
+  };
+
+  // Retained for the QA suite and for the deep-dive panels below the answer.
+  function renderAdvisorFindingsPanel(root) {
     var F = advisorFindings();
     var H = advisorHealth(F);
 
@@ -3040,8 +4286,16 @@
     var nav = $("#nav");
     nav.innerHTML = "";
     NAV.forEach(function (n) {
+      if (n.serverAdminOnly && !isServerAdmin()) return;
+      // The demo has no account, so anything that administers one is absent
+      // rather than present-but-broken.
+      if (isTrialMode() && n.id === "admin") return;
+      var badge = "";
+      if (n.id === "admin" && adminState.pendingCount > 0) {
+        badge = "<span class='chip sm warn nav-badge'>" + adminState.pendingCount + "</span>";
+      }
       var b = el("button", { dataset: { view: n.id }, class: ui.view === n.id ? "active" : "" },
-        '<span class="nav-ico">' + n.ico + "</span><span>" + esc(n.label) + "</span>");
+        '<span class="nav-ico">' + n.ico + "</span><span>" + esc(n.label) + "</span>" + badge);
       b.addEventListener("click", function () { go(n.id); });
       nav.appendChild(b);
     });
@@ -3065,6 +4319,29 @@
     newCardBtn.disabled = !showNewCard;
     refreshUndoRedo();
     renderUserChip();
+    renderImpersonationBanner();
+  }
+
+  /**
+   * Whose data am I editing? Permanent, unmissable, and dismissable only by
+   * leaving. Silent administrator access to someone else's project data is the
+   * failure mode worth designing against.
+   */
+  function renderImpersonationBanner() {
+    var existing = document.getElementById("impersonationBanner");
+    if (!adminWorkspace) { if (existing) existing.remove(); return; }
+    if (existing) existing.remove();
+
+    var bar = el("div", { id: "impersonationBanner", class: "warn-banner" });
+    bar.appendChild(el("span", null,
+      "<strong>Administrator access</strong> — you are working in " +
+      esc(adminWorkspace.ownerName || adminWorkspace.ownerEmail) +
+      "'s workspace. Changes save to their account and are recorded in the audit log."));
+    var back = mkBtn("Return to my workspace", "btn sm", adminReturnToOwnWorkspace);
+    bar.appendChild(back);
+
+    var main = document.querySelector(".main");
+    if (main) main.insertBefore(bar, main.firstChild);
   }
 
   function renderUserChip() {
@@ -3078,8 +4355,11 @@
     chip.innerHTML =
       "<span class='avatar' style='background:" + avatarColor(u.displayName) + "'>" + esc(initials(u.displayName)) + "</span>" +
       "<div class='user-chip-text'><strong>" + esc(u.displayName) + "</strong><span class='faint'>" + esc(u.role) + "</span></div>";
-    var out = el("button", { class: "btn sm ghost", title: "Sign out" }, "Sign out");
-    out.addEventListener("click", function () { logout(); });
+    // In the demo there is no session to end; offer the way in instead.
+    var out = isTrialMode()
+      ? el("a", { class: "btn sm ghost", href: "/request-access", title: "Request an account" }, "Get an account")
+      : el("button", { class: "btn sm ghost", title: "Sign out" }, "Sign out");
+    if (!isTrialMode()) out.addEventListener("click", function () { logout(); });
     chip.appendChild(out);
     foot.insertBefore(chip, foot.firstChild);
   }
@@ -3110,8 +4390,119 @@
 
   /* VIEWS is declared above (PM Advisor section) — first registration in source order. */
 
+  /* ----------------------------------------------------------------------- *
+   * New-workspace setup checklist
+   * ----------------------------------------------------------------------- *
+   * Steps are derived from the workspace itself rather than stored as progress
+   * flags, so they stay honest: delete the project and step 1 unticks. The
+   * order follows how a project is actually stood up — charter the project,
+   * staff it, decompose the work (PMBOK), then limit WIP so the board is a pull
+   * system rather than a to-do list (Kanban).
+   * ----------------------------------------------------------------------- */
+  var onboardingDocCount = null;   // null until the library has been queried
+
+  function onboardingSteps() {
+    var board = state.boards.filter(function (b) { return b.id === state.activeBoardId; })[0] || state.boards[0];
+    var wipSet = !!(board && (board.columns || []).some(function (c) { return c.wip > 0; }));
+    return [
+      { id: "project", label: "Charter your first project",
+        detail: "Name, client, budget, and the period of performance. This is the baseline everything else is measured against.",
+        done: state.projects.length > 0,
+        action: "New project", go: function () { go("projects"); openProjectAdmin(null); } },
+      { id: "team", label: "Add the people doing the work",
+        detail: "Capacity and rates per person — without them there is no utilization, no cost, and no multiplier.",
+        done: (state.resources || []).length > 0,
+        action: "Add resources", go: function () { go("resources"); } },
+      { id: "wbs", label: "Decompose the scope into work items",
+        detail: "A WBS of deliverables with estimates. Earned value needs a denominator.",
+        done: state.cards.length > 0,
+        action: "Plan the work", go: function () { go("wbslist"); } },
+      { id: "wip", label: "Set WIP limits on the board",
+        detail: "A column limit is what makes the board a pull system instead of a queue. Start near the number of people who can genuinely work in parallel.",
+        done: wipSet,
+        action: "Open board", go: function () { go("board"); } },
+      { id: "procedures", label: "Load your PM procedures",
+        detail: "The Assistant cites your own standards. Until something is loaded it can only reason from the built-in corpus.",
+        done: onboardingDocCount === null ? false : onboardingDocCount > 0,
+        action: "Add procedures", go: function () { go("settings"); } },
+      { id: "ask", label: "Ask the Assistant about your portfolio",
+        detail: "Scope it to a project and ask what to do first. Answers cite the clauses that govern them.",
+        done: !!state.settings.onboardingAsked,
+        action: "Open Assistant", go: function () { go("advisor"); } },
+    ];
+  }
+
+  function onboardingComplete() {
+    return onboardingSteps().every(function (s) { return s.done; });
+  }
+
+  function assistantShowOnboarding() {
+    if (state.settings.onboardingDismissed) return false;
+    // Blank-started workspaces keep the checklist until the work is actually
+    // set up; an existing portfolio never sees it.
+    if (!state.blankStart) return false;
+    return !onboardingComplete();
+  }
+
+  function renderOnboarding(root) {
+    var steps = onboardingSteps();
+    var doneCount = steps.filter(function (s) { return s.done; }).length;
+
+    var panel = el("div", { class: "panel panel-pad mb" });
+    var head = el("div", { class: "flex wrap", style: "gap:10px;align-items:baseline" });
+    head.appendChild(el("h2", { style: "margin:0" }, "Set up your workspace"));
+    head.appendChild(el("span", { class: "chip sm " + (doneCount === steps.length ? "ok" : "warn") },
+      doneCount + " of " + steps.length + " complete"));
+    panel.appendChild(head);
+    panel.appendChild(el("p", { class: "muted" },
+      "Work through these in order. Each one ticks itself when the underlying data exists — nothing here is a stored flag."));
+
+    var list = el("div", { class: "mt" });
+    steps.forEach(function (s, i) {
+      var row = el("div", { class: "advisor-finding" });
+      row.innerHTML =
+        "<div class='af-head'>" +
+        "<span class='badge " + (s.done ? "ok" : "neutral") + "'>" + (s.done ? "✓" : (i + 1)) + "</span>" +
+        "<strong class='af-title'" + (s.done ? " style='opacity:.65'" : "") + ">" + esc(s.label) + "</strong></div>" +
+        "<div class='af-evidence'>" + esc(s.detail) + "</div>";
+      if (!s.done) {
+        var b = el("button", { class: "btn sm af-open" }, s.action);
+        b.addEventListener("click", s.go);
+        row.appendChild(b);
+      }
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    var foot = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    foot.appendChild(mkBtn("Hide this checklist", "btn sm ghost", function () {
+      mutate(function () { state.settings.onboardingDismissed = true; });
+    }));
+    if (!state.projects.length) {
+      foot.appendChild(mkBtn("Load the sample portfolio instead", "btn sm ghost", function () {
+        confirmModal("Load sample data?",
+          "This replaces your empty workspace with the Techniek demo portfolio so you can explore the tool. You can clear it later from Settings & Data.",
+          function () {
+            mutate(function () {
+              var demo = demoWorkspace();
+              Object.keys(demo).forEach(function (k) { state[k] = demo[k]; });
+              state.blankStart = false;
+            });
+            toast("Sample portfolio loaded", "ok");
+          });
+      }));
+    }
+    panel.appendChild(foot);
+    root.appendChild(panel);
+  }
+
   /* ---------- Dashboard ---------- */
   VIEWS.dashboard = function (root) {
+    // Setup guidance is for a workspace that has not been stood up yet. An
+    // established portfolio is not "incomplete" just because one optional step
+    // was never ticked, so the checklist is gated on the workspace being empty
+    // rather than on every step being done.
+    if (assistantShowOnboarding()) renderOnboarding(root);
     var t = portfolioTotals();
     var fin = canFinance();
     root.appendChild(pageHead("Portfolio Dashboard", "Live status across all boards, projects, and resources."));
@@ -3927,7 +5318,13 @@
     ui.filterProject = p.id || prevProject || "";
   }
   function renderWorkspaceGantt(root, p) {
-    var prev = state.activeBoardId; state.activeBoardId = p.boardId; VIEWS.gantt(root); state.activeBoardId = prev;
+    // Inside a project workspace the scope is already decided, so the Gantt
+    // renders for that project and hides its own selector.
+    var prevProject = ui.ganttProjectId, prevEmbedded = ui.ganttEmbedded;
+    ui.ganttProjectId = p.id;
+    ui.ganttEmbedded = true;
+    try { VIEWS.gantt(root); }
+    finally { ui.ganttProjectId = prevProject; ui.ganttEmbedded = prevEmbedded; }
   }
   function projectResourceRows(projectId) {
     var map = {};
@@ -4640,14 +6037,42 @@
     setTimeout(function () { window.print(); }, 30);
   }
   VIEWS.gantt = function (root) {
-    var b = activeBoard();
-    var head = pageHead("Gantt & Critical Path — " + b.name, "Scheduled work by date. Drag a bar to reschedule start and finish dates; the critical path is highlighted.");
+    // Scoped by project rather than by board. A board can carry several
+    // projects and a project can span boards, so "the schedule" a PM means is
+    // the project's — with the whole portfolio available when comparing them.
+    var scopeProject = projectById(ui.ganttProjectId) || null;
+    var scopeName = scopeProject ? scopeProject.name : "Whole portfolio";
+
+    var head = pageHead("Gantt & Critical Path — " + scopeName,
+      "Scheduled work by date. Drag a bar to reschedule start and finish dates; the critical path is highlighted.");
     var printBtn = el("button", { class: "btn primary sm no-print" }, "🖨 Print / PDF");
     printBtn.addEventListener("click", function () { printView(true); });
     (head.querySelector(".head-actions") || head).appendChild(printBtn);
     root.appendChild(head);
-    var cards = boardCards(b.id).filter(function (c) { return c.due || c.startDate; });
-    if (!cards.length) { root.appendChild(el("div", { class: "panel panel-pad empty" }, "No dated work on this board yet. Add start/due dates to cards to see the timeline.")); return; }
+
+    if (!ui.ganttEmbedded) {
+      var filters = el("div", { class: "filters mb no-print" });
+      var sel = el("select", { class: "select select-sm" },
+        "<option value=''>Whole portfolio</option>" + state.projects.map(function (x) {
+          return "<option value='" + x.id + "'" + (scopeProject && x.id === scopeProject.id ? " selected" : "") +
+            ">" + esc(x.name) + "</option>";
+        }).join(""));
+      sel.addEventListener("change", function () { ui.ganttProjectId = sel.value; render(); });
+      filters.appendChild(sel);
+      root.appendChild(filters);
+    }
+
+    var inScope = scopeProject
+      ? state.cards.filter(function (c) { return c.projectId === scopeProject.id; })
+      : state.cards.slice();
+    var cards = inScope.filter(function (c) { return c.due || c.startDate; });
+    if (!cards.length) {
+      root.appendChild(el("div", { class: "panel panel-pad empty" },
+        scopeProject
+          ? "No dated work on " + esc(scopeProject.name) + " yet. Add start/due dates to its work items to see the timeline."
+          : "No dated work yet. Add start/due dates to cards to see the timeline."));
+      return;
+    }
 
     // Determine date span.
     var dates = [];
@@ -4655,7 +6080,20 @@
     var min = new Date(Math.min.apply(null, dates)), max = new Date(Math.max.apply(null, dates));
     min.setDate(min.getDate() - 2); max.setDate(max.getDate() + 2);
     var span = Math.max(1, (max - min) / 86400000);
-    var cp = criticalPath(boardCards(b.id));
+    // Dependencies only resolve within a board, so the critical path is computed
+    // per board and merged — computing it across a mixed set would chain work
+    // items that have no relationship to each other.
+    var cp = scopeProject
+      ? criticalPath(inScope)
+      : (function () {
+          var merged = { set: {}, lengthDays: 0 };
+          state.boards.forEach(function (bd) {
+            var r = criticalPath(boardCards(bd.id));
+            Object.keys(r.set || {}).forEach(function (k) { merged.set[k] = true; });
+            merged.lengthDays = Math.max(merged.lengthDays, r.lengthDays || 0);
+          });
+          return merged;
+        })();
 
     var legend = el("div", { class: "flex wrap mb", style: "gap:14px;font-size:12px" });
     legend.innerHTML = "<span class='flex'><span class='gantt-swatch cp'></span> Critical path (" + cp.lengthDays + " workdays)</span>" +
@@ -4752,16 +6190,35 @@
   VIEWS.risks = function (root) {
     var head = pageHead("Risk Register", "Qualitative risk analysis (probability × impact), response strategy, and ownership.");
     var expBtn = el("button", { class: "btn sm" }, "⬇ Export register");
-    expBtn.addEventListener("click", function () { exportRiskRegisterCSV(null); });
+    // Export what is on screen, not the whole portfolio — exporting rows the
+    // user cannot see is how the wrong register reaches a client.
+    expBtn.addEventListener("click", function () { exportRiskRegisterCSV(ui.riskProjectId || null); });
     head.querySelector(".head-actions").appendChild(expBtn);
     if (canGovernRegisters()) {
       var addBtn = el("button", { class: "btn primary sm" }, "+ Add risk");
-      addBtn.addEventListener("click", function () { openRiskEditor(null); });
+      // Default the new risk to whatever project is being viewed.
+      addBtn.addEventListener("click", function () { openRiskEditor(null, ui.riskProjectId || null); });
       head.querySelector(".head-actions").appendChild(addBtn);
     }
     root.appendChild(head);
 
-    var risks = state.risks || [];
+    // Scoped to a project the same way Action Items is, so the registers behave
+    // identically. Everything below — the counts, the matrix, the response mix,
+    // and the export — follows the selection rather than only the table.
+    var selectedProject = projectById(ui.riskProjectId) || null;
+    var filters = el("div", { class: "filters mb" });
+    var sel = el("select", { class: "select select-sm" },
+      "<option value=''>All projects</option>" + state.projects.map(function (x) {
+        return "<option value='" + x.id + "'" + (selectedProject && x.id === selectedProject.id ? " selected" : "") +
+          ">" + esc(x.name) + "</option>";
+      }).join(""));
+    sel.addEventListener("change", function () { ui.riskProjectId = sel.value; render(); });
+    filters.appendChild(sel);
+    root.appendChild(filters);
+
+    var risks = (state.risks || []).filter(function (r) {
+      return !ui.riskProjectId || r.projectId === ui.riskProjectId;
+    });
     var open = risks.filter(function (r) { return r.status !== "Closed"; });
     var high = risks.filter(function (r) { return r.probability * r.impact >= 12 && r.status !== "Closed"; });
     var stats = el("div", { class: "grid cols-4" });
@@ -4814,7 +6271,9 @@
       if (canGovernRegisters()) tr.addEventListener("click", function () { openRiskEditor(rk.id); });
       tb.appendChild(tr);
     });
-    if (!risks.length) tb.appendChild(el("tr", null, "<td colspan='11' class='empty'>No risks logged. Add the first risk to start the register.</td>"));
+    if (!risks.length) tb.appendChild(el("tr", null, "<td colspan='11' class='empty'>" +
+      (ui.riskProjectId ? "No risks logged for this project yet." : "No risks logged. Add the first risk to start the register.") +
+      "</td>"));
     tbl.appendChild(tb);
     panel.appendChild(tbl);
     root.appendChild(panel);
@@ -5411,6 +6870,432 @@
     tbl.appendChild(tb); root.appendChild(el("div", { class: "panel" })).appendChild(tbl);
   };
 
+  /* ----------------------------------------------------------------------- *
+   * Accounts — server-side user administration
+   * ----------------------------------------------------------------------- *
+   * Approve, suspend, and assign roles. Every action is re-authorized on the
+   * server and written to the audit log; nothing here is trusted client-side.
+   * ----------------------------------------------------------------------- */
+  var ACCOUNT_STATUSES = ["pending", "active", "suspended"];
+
+  function accountStatusClass(status) {
+    return status === "active" ? "ok" : status === "pending" ? "warn" : "danger";
+  }
+
+  async function adminFetchUsers() {
+    adminState.loading = true;
+    adminState.error = "";
+    try {
+      var res = await fetch("/api/admin/users");
+      if (!res.ok) {
+        var problem = await res.json().catch(function () { return {}; });
+        throw new Error(problem.detail || problem.error || "Server returned " + res.status);
+      }
+      var data = await res.json();
+      adminState.users = data.users || [];
+      adminState.pendingCount = adminState.users.filter(function (u) { return u.status === "pending"; }).length;
+      adminState.loaded = true;
+    } catch (err) {
+      adminState.error = err.message;
+    } finally {
+      adminState.loading = false;
+      if (ui.view === "admin") render(); else renderShell();
+    }
+  }
+
+  async function adminPost(path, body, okMessage) {
+    try {
+      var res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) { toast(data.error || "That change could not be applied.", "err"); return false; }
+      toast(okMessage, "ok");
+      adminFetchUsers();
+      return true;
+    } catch (err) {
+      toast("Could not reach the server: " + err.message, "err");
+      return false;
+    }
+  }
+
+  function adminSetStatus(user, status) {
+    var verb = status === "active" ? (user.status === "pending" ? "Approve" : "Reactivate") : "Suspend";
+    if (status === "active" && user.status === "pending") {
+      adminPost("/api/admin/users/" + encodeURIComponent(user.id) + "/status", { status: status },
+        "Approved " + user.email);
+      return;
+    }
+    confirmModal(
+      verb + " " + (user.display_name || user.email) + "?",
+      status === "suspended"
+        ? "They keep their data but cannot sign in to this workspace until reactivated."
+        : "They regain access immediately.",
+      function () {
+        adminPost("/api/admin/users/" + encodeURIComponent(user.id) + "/status", { status: status },
+          verb + "d " + user.email);
+      }
+    );
+  }
+
+  VIEWS.admin = function (root) {
+    root.appendChild(pageHead("Accounts",
+      "Approve new sign-ins, assign roles, and suspend access. Changes apply immediately and are recorded in the audit log."));
+
+    if (!isServerAdmin()) {
+      root.appendChild(el("div", { class: "panel panel-pad" },
+        "<p class='muted'>Administrator access is required. This view is enforced on the server, not by the simulated role selector.</p>"));
+      return;
+    }
+
+    if (!adminState.loaded && !adminState.loading) adminFetchUsers();
+
+    if (adminState.error) {
+      root.appendChild(el("div", { class: "warn-banner mb" },
+        "Could not load accounts: " + esc(adminState.error) + " — check that the Worker and database are reachable, then reload."));
+    }
+
+    var users = adminState.users;
+    var pending = users.filter(function (u) { return u.status === "pending"; }).length;
+    var active = users.filter(function (u) { return u.status === "active"; }).length;
+    var suspended = users.filter(function (u) { return u.status === "suspended"; }).length;
+    var admins = users.filter(function (u) { return u.global_role === "Admin" && u.status === "active"; }).length;
+
+    var stats = el("div", { class: "grid cols-4" });
+    stats.appendChild(statCard("Awaiting approval", pending, pending ? "needs your decision" : "nothing queued", pending ? "warn" : "ok"));
+    stats.appendChild(statCard("Active", active, "can sign in"));
+    stats.appendChild(statCard("Suspended", suspended, "blocked from access", suspended ? "danger" : "ok"));
+    stats.appendChild(statCard("Administrators", admins, "can manage accounts"));
+    root.appendChild(stats);
+
+    renderAccessRequestsPanel(root);
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    var head = el("div", { class: "row gap" });
+    var search = el("input", { class: "input", id: "adminSearch", type: "search",
+      placeholder: "Filter by name, email, role, or status…", value: adminState.filter });
+    search.addEventListener("input", function () {
+      adminState.filter = this.value;
+      renderAdminTable(tableHost);
+    });
+    head.appendChild(search);
+    head.appendChild(mkBtn("+ Add account", "btn primary", adminCreateUserPrompt));
+    head.appendChild(mkBtn("↻ Refresh", "btn ghost", function () { adminFetchUsers(); }));
+    panel.appendChild(head);
+
+    var tableHost = el("div", { class: "mt" });
+    panel.appendChild(tableHost);
+    renderAdminTable(tableHost);
+
+    panel.appendChild(el("p", { class: "hint mt" },
+      "New sign-ins arrive as <strong>Pending</strong> and cannot open a workspace until approved. " +
+      "Roles follow the gates in the Roles &amp; Permissions guide. You cannot suspend, delete, or demote " +
+      "yourself, and the last administrator cannot be removed."));
+    root.appendChild(panel);
+
+    renderAdminWorkspacesPanel(root);
+  };
+
+  /**
+   * Public account requests. Deciding one records the decision; it does not
+   * create a user or change the Access policy, so nothing here can hand out
+   * access by accident.
+   */
+  function renderAccessRequestsPanel(root) {
+    if (!adminState.requestsLoaded && !adminState.requestsLoading) {
+      adminState.requestsLoading = true;
+      fetch("/api/admin/requests")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          adminState.requests = (d && d.requests) || [];
+          adminState.requestsLoaded = true;
+        })
+        .catch(function () { adminState.requestsLoaded = true; })
+        .then(function () { adminState.requestsLoading = false; if (ui.view === "admin") render(); });
+    }
+
+    var rows = adminState.requests || [];
+    var open = rows.filter(function (r) { return r.status === "new"; });
+    if (!rows.length) return;
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.appendChild(el("h2", null, "Account requests" +
+      (open.length ? " · " + open.length + " awaiting review" : "")));
+    panel.appendChild(el("p", { class: "muted" },
+      "Submitted from the public request form. Recording a decision here does not create an account — " +
+      "invite the person separately once you are satisfied."));
+
+    var tbl = el("table", { class: "table mt" });
+    tbl.innerHTML = "<thead><tr><th>Requester</th><th>Organization</th><th>Reason</th>" +
+      "<th>From</th><th>Status</th><th>Actions</th></tr></thead>";
+    var tb = el("tbody");
+
+    rows.slice(0, 50).forEach(function (r) {
+      var tr = el("tr", { class: r.status === "new" ? "active-row" : "" });
+      tr.appendChild(el("td", null, "<strong>" + esc(r.name || "—") + "</strong><div class='faint'>" +
+        esc(r.email) + "</div>"));
+      tr.appendChild(el("td", { class: "muted" }, esc(r.company || "—")));
+      tr.appendChild(el("td", { class: "muted" }, esc((r.reason || "—").slice(0, 160))));
+      tr.appendChild(el("td", { class: "muted" }, esc(r.country || "—") + " · " +
+        new Date(r.created_at).toLocaleDateString()));
+      tr.appendChild(el("td", null, "<span class='chip sm " +
+        (r.status === "new" ? "warn" : r.status === "invited" ? "ok" : "") + "'>" + esc(r.status) + "</span>"));
+
+      var act = el("td");
+      if (r.status === "new") {
+        act.appendChild(mkBtn("Mark invited", "btn sm primary", function () { decideRequest(r, "invited"); }));
+        act.appendChild(mkBtn("Decline", "btn sm ghost", function () { decideRequest(r, "declined"); }));
+      } else {
+        act.appendChild(mkBtn("Reopen", "btn sm ghost", function () { decideRequest(r, "new"); }));
+      }
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    panel.appendChild(tbl);
+    root.appendChild(panel);
+  }
+
+  function adminCreateUserPrompt() {
+    var body = el("div");
+    body.innerHTML =
+      "<div class='form-grid'>" +
+      "<div class='form-row full'><label class='field-label inline'>Email</label>" +
+      "<input class='input' id='nuEmail' type='email' placeholder='name@company.com'></div>" +
+      "<div class='form-row'><label class='field-label inline'>Display name</label>" +
+      "<input class='input' id='nuName' placeholder='optional'></div>" +
+      "<div class='form-row'><label class='field-label inline'>Role</label>" +
+      "<select class='select' id='nuRole'>" + ROLES.map(function (r) {
+        return "<option" + (r === "Project Manager" ? " selected" : "") + ">" + esc(r) + "</option>";
+      }).join("") + "</select></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Status</label>" +
+      "<select class='select' id='nuStatus'><option value='active'>Active — can sign in immediately</option>" +
+      "<option value='pending'>Pending — must be approved first</option></select></div>" +
+      "</div>" +
+      "<p class='hint mt'>This pre-authorizes the person inside the application. They must still be able to " +
+      "authenticate through Cloudflare Access before they can reach it at all.</p>";
+
+    modal("Add an account", body, [
+      { label: "Cancel", cls: "btn", fn: closeModal },
+      { label: "Create account", cls: "btn primary", fn: function () {
+          var payload = {
+            email: $("#nuEmail").value.trim(),
+            displayName: $("#nuName").value.trim(),
+            role: $("#nuRole").value,
+            status: $("#nuStatus").value,
+          };
+          if (!payload.email) { toast("An email address is required", "err"); return; }
+          fetch("/api/admin/users", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          }).then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d.error) { toast(d.error, "err"); return; }
+              closeModal();
+              toast("Account created for " + payload.email, "ok");
+              adminFetchUsers();
+            })
+            .catch(function (e) { toast(e.message, "err"); });
+        } },
+    ]);
+  }
+
+  function adminDeleteUser(u) {
+    confirmModal("Delete " + (u.display_name || u.email) + "?",
+      "This permanently removes the account, its workspace, and its private procedure library. " +
+      "Workspaces shared with someone else are kept. This cannot be undone — suspend instead if you " +
+      "only need to block access.",
+      function () {
+        fetch("/api/admin/users", {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: u.id })
+        }).then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) { toast(d.error, "err"); return; }
+            toast("Deleted " + d.email, "ok");
+            adminFetchUsers();
+          })
+          .catch(function (e) { toast(e.message, "err"); });
+      });
+  }
+
+  /** Open another account's project data, with the access recorded. */
+  function adminOpenWorkspace(ws) {
+    confirmModal("Open " + (ws.owner_name || ws.owner_email) + "'s workspace?",
+      "You will see and be able to change their project data. Every open and every save is written to " +
+      "the audit log against your name. Your own workspace is untouched and you can return to it at any time.",
+      function () {
+        adminWorkspace = { id: ws.id, ownerEmail: ws.owner_email, ownerName: ws.owner_name };
+        syncState.serverRev = 0;
+        syncState.hydrating = true;
+        fetchFromServer().then(function () {
+          ui.view = "dashboard";
+          render();
+          toast("Opened " + (ws.owner_name || ws.owner_email) + "'s workspace", "ok");
+        });
+      });
+  }
+
+  function adminReturnToOwnWorkspace() {
+    adminWorkspace = null;
+    syncState.serverRev = 0;
+    syncState.hydrating = true;
+    fetchFromServer().then(function () {
+      ui.view = "dashboard";
+      render();
+      toast("Back in your own workspace", "ok");
+    });
+  }
+
+  function renderAdminWorkspacesPanel(root) {
+    if (!adminState.workspacesLoaded && !adminState.workspacesLoading) {
+      adminState.workspacesLoading = true;
+      fetch("/api/admin/workspaces")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { adminState.workspaces = (d && d.workspaces) || []; adminState.workspacesLoaded = true; })
+        .catch(function () { adminState.workspacesLoaded = true; })
+        .then(function () { adminState.workspacesLoading = false; if (ui.view === "admin") render(); });
+    }
+
+    var rows = adminState.workspaces || [];
+    if (!rows.length) return;
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.appendChild(el("h2", null, "Project data by account"));
+    panel.appendChild(el("p", { class: "muted" },
+      "Open another account's workspace to investigate or correct their project data. Access is recorded " +
+      "in the audit log against your name."));
+
+    var tbl = el("table", { class: "table mt" });
+    tbl.innerHTML = "<thead><tr><th>Owner</th><th class='num'>Projects</th><th class='num'>Work items</th>" +
+      "<th class='num'>Rev</th><th>Last saved</th><th></th></tr></thead>";
+    var tb = el("tbody");
+
+    rows.forEach(function (w) {
+      var isCurrent = adminWorkspace && adminWorkspace.id === w.id;
+      var tr = el("tr", { class: isCurrent ? "active-row" : "" });
+      tr.appendChild(el("td", null, "<strong>" + esc(w.owner_name || w.owner_email || "—") + "</strong>" +
+        "<div class='faint'>" + esc(w.owner_email || w.id) + "</div>"));
+      tr.appendChild(el("td", { class: "num muted" }, String(w.projects)));
+      tr.appendChild(el("td", { class: "num muted" }, String(w.cards)));
+      tr.appendChild(el("td", { class: "num muted" }, String(w.rev)));
+      tr.appendChild(el("td", { class: "muted" }, w.updated_at ? new Date(w.updated_at).toLocaleString() : "never"));
+      var act = el("td");
+      if (isCurrent) {
+        act.appendChild(el("span", { class: "chip sm warn" }, "open now"));
+      } else if (w.owner_email === serverSession.email) {
+        act.appendChild(el("span", { class: "chip sm ok" }, "yours"));
+      } else {
+        act.appendChild(mkBtn("Open workspace", "btn sm ghost", function () { adminOpenWorkspace(w); }));
+      }
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    panel.appendChild(tbl);
+    root.appendChild(panel);
+  }
+
+  function decideRequest(req, decision) {
+    fetch("/api/admin/requests/decide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: req.id, decision: decision })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { toast(d.error, "err"); return; }
+        adminState.requestsLoaded = false;
+        toast("Request marked " + decision, "ok");
+        render();
+      })
+      .catch(function (e) { toast("Could not reach the server: " + e.message, "err"); });
+  }
+
+  function renderAdminTable(host) {
+    host.innerHTML = "";
+
+    if (adminState.loading && !adminState.users.length) {
+      host.appendChild(el("p", { class: "muted" }, "Loading accounts…"));
+      return;
+    }
+
+    var q = adminState.filter.trim().toLowerCase();
+    var rows = adminState.users.filter(function (u) {
+      if (!q) return true;
+      return [u.email, u.display_name, u.global_role, u.status].join(" ").toLowerCase().indexOf(q) !== -1;
+    });
+
+    var tbl = el("table", { class: "table" });
+    tbl.innerHTML = "<thead><tr><th>Person</th><th>Status</th><th>Role</th><th>Last seen</th><th>Actions</th></tr></thead>";
+    var tb = el("tbody");
+
+    rows.forEach(function (u) {
+      var isSelf = u.email === serverSession.email;
+      var tr = el("tr");
+
+      tr.appendChild(el("td", null,
+        "<div class='row gap-sm'><span class='avatar' style='background:" + avatarColor(u.display_name || u.email) + "'>" +
+        esc(initials(u.display_name || u.email)) + "</span><div><strong>" + esc(u.display_name || u.email) + "</strong>" +
+        (isSelf ? " <span class='chip sm'>you</span>" : "") +
+        "<div class='faint'>" + esc(u.email) + "</div></div></div>"));
+
+      tr.appendChild(el("td", null,
+        "<span class='chip sm " + accountStatusClass(u.status) + "'>" + esc(u.status) + "</span>"));
+
+      var roleCell = el("td");
+      var roleSel = el("select", { class: "select select-sm" });
+      roleSel.innerHTML = ROLES.map(function (r) {
+        return "<option" + (r === u.global_role ? " selected" : "") + ">" + esc(r) + "</option>";
+      }).join("");
+      roleSel.addEventListener("change", function () {
+        var next = this.value;
+        var self = this;
+        confirmModal("Change role to " + next + "?",
+          (u.display_name || u.email) + " will get the permissions of " + next + " the next time their board loads.",
+          function () {
+            adminPost("/api/admin/users/" + encodeURIComponent(u.id) + "/role", { role: next },
+              "Role updated to " + next);
+          });
+        // Revert the control until the server confirms; the refresh redraws it.
+        self.value = u.global_role;
+      });
+      roleCell.appendChild(roleSel);
+      tr.appendChild(roleCell);
+
+      tr.appendChild(el("td", { class: "muted" },
+        u.last_seen_at ? new Date(u.last_seen_at).toLocaleString() : "never"));
+
+      var actions = el("td");
+      if (u.status === "pending") {
+        actions.appendChild(mkBtn("Approve", "btn sm primary", function () { adminSetStatus(u, "active"); }));
+      } else if (u.status === "active") {
+        var susp = mkBtn("Suspend", "btn sm danger", function () { adminSetStatus(u, "suspended"); });
+        if (isSelf) { susp.disabled = true; susp.title = "You cannot suspend your own account."; }
+        actions.appendChild(susp);
+      } else {
+        actions.appendChild(mkBtn("Reactivate", "btn sm", function () { adminSetStatus(u, "active"); }));
+      }
+      if (!isSelf) {
+        actions.appendChild(mkBtn("Delete", "btn sm danger", function () { adminDeleteUser(u); }));
+      }
+      tr.appendChild(actions);
+
+      tb.appendChild(tr);
+    });
+
+    if (!rows.length) {
+      tb.appendChild(el("tr", null, "<td colspan='5' class='empty'>" +
+        (adminState.filter ? "No accounts match that filter." : "No accounts yet.") + "</td>"));
+    }
+
+    tbl.appendChild(tb);
+    host.appendChild(tbl);
+  }
+
 
   function appendPmFormattedText(host, text) {
     var lines = String(text || "").split(/\r?\n/);
@@ -5441,6 +7326,9 @@
     panel.appendChild(el("p", { class: "muted" },
       "Ranked retrieval over " + docs.length + " procedure document(s) held locally — PMBOK-informed practice, Kanban flow, A/E financials, plus any procedures you add. " +
       "Runs entirely in this browser: no API key, no network, works offline."));
+    panel.appendChild(el("p", { class: "hint" },
+      "Looking for advice on a specific project? Use the <strong>Assistant</strong> tab — it lets you pick a project " +
+      "and answers against its live CPI, SPI, staffing, and the clauses that govern them."));
     var q = el("input", { class: "input", id: "kbQuery", placeholder: "e.g. what do I do about a WIP breach · why is contribution margin falling · when should I re-baseline" });
     q.value = ui.kbQuery || "";
     q.addEventListener("keydown", function (e) { if (e.key === "Enter") { ui.kbQuery = q.value; render(); } });
@@ -5741,54 +7629,17 @@
     grid.appendChild(prefPanel);
 
 
-    var fabricPanel = el("div", { class: "panel panel-pad" });
-    fabricPanel.appendChild(el("h2", null, "Microsoft Fabric data connector"));
-    fabricPanel.appendChild(el("p", { class: "muted" }, "Access point for ERMAS and accounting data hosted in Microsoft Fabric. Store only the Fabric workspace, lakehouse, warehouse, semantic model, or report URL here; credentials remain in Microsoft Entra / Fabric."));
-    var fabricRow = el("div", { class: "form-row" });
-    fabricRow.innerHTML = "<label class='field-label inline'>Fabric ERMAS / Accounting data URL</label>";
-    var fabricInput = el("input", { class: "input", placeholder: "https://app.fabric.microsoft.com/...", value: (state.integrationSettings || {}).fabricErmasAccountingUrl || "" });
-    if (role() !== "Admin") fabricInput.setAttribute("disabled", "disabled");
-    fabricInput.addEventListener("change", function () {
-      mutate(function () {
-        state.integrationSettings = state.integrationSettings || {};
-        state.integrationSettings.fabricErmasAccountingUrl = fabricInput.value.trim();
-      });
-    });
-    fabricRow.appendChild(fabricInput);
-    fabricPanel.appendChild(fabricRow);
-    var fabricActions = el("div", { class: "flex wrap mt" });
-    var fabricUrl = ((state.integrationSettings || {}).fabricErmasAccountingUrl || "").trim();
-    var fabricOpen = el("a", { class: "btn primary" + (fabricUrl ? "" : " disabled"), href: fabricUrl || "#", target: "_blank", rel: "noopener noreferrer" }, "Open Fabric data");
-    if (!fabricUrl) {
-      fabricOpen.setAttribute("aria-disabled", "true");
-      fabricOpen.addEventListener("click", function (e) { e.preventDefault(); toast("Add the Microsoft Fabric ERMAS / Accounting URL first", "err"); });
-    }
-    fabricActions.appendChild(fabricOpen);
-    fabricActions.appendChild(el("span", { class: "hint" }, role() === "Admin" ? "Admins can edit this link; access is still controlled by Microsoft Fabric permissions." : "Only Admins can edit this link; Fabric permissions control access."));
-    fabricPanel.appendChild(fabricActions);
-    grid.appendChild(fabricPanel);
-
-    if (role() === "Admin") {
-      var apiPanel = el("div", { class: "panel panel-pad" });
-      apiPanel.appendChild(el("h2", null, "Backend API configuration"));
-      apiPanel.appendChild(el("p", { class: "muted" }, "Backend-ready connector settings. OpenAI keys are server-side only; use server/.env.local for the local proxy."));
-      var epRow = el("div", { class: "form-row" });
-      epRow.innerHTML = "<label class='field-label inline'>API endpoint</label>";
-      var ep = el("input", { class: "input", placeholder: "https://api.example.com/opsboard", value: state.settings.apiEndpoint || "" });
-      ep.addEventListener("change", function () { mutate(function () { state.settings.apiEndpoint = ep.value.trim(); }); });
-      epRow.appendChild(ep);
-      apiPanel.appendChild(epRow);
-      var pmRow = el("div", { class: "form-row mt" });
-      pmRow.innerHTML = "<label class='field-label inline'>Agent proxy</label>";
-      var pmEp = el("input", { class: "input", placeholder: AGENT_PROXY_DEFAULT, value: state.settings.agentEndpoint || AGENT_PROXY_DEFAULT });
-      pmEp.addEventListener("change", function () { mutate(function () { state.settings.agentEndpoint = pmEp.value.trim() || AGENT_PROXY_DEFAULT; }); });
-      pmRow.appendChild(pmEp);
-      apiPanel.appendChild(pmRow);
-      apiPanel.appendChild(el("div", { class: "hint mt" }, "Optional — powers the AI agent only. Procedure Q&A is answered from the local corpus and needs no endpoint. " + secretWarning()));
-      grid.appendChild(apiPanel);
-    }
+    // The Microsoft Fabric connector and the backend API configuration panels
+    // were removed: Fabric was a link field with no integration behind it, and
+    // the API endpoint predates the Worker, which is now addressed by same-origin
+    // routing rather than a user-entered URL. Keeping either would have been a
+    // setting that looks load-bearing and is not.
 
     root.appendChild(grid);
+
+    // Procedure library lives here, with the other data-management controls,
+    // rather than on the Advisor screen where it competed with asking questions.
+    renderProcedureLibrary(root);
 
     // Account & access
     var acctPanel = el("div", { class: "panel panel-pad mt" });
@@ -7425,11 +9276,11 @@
     window.addEventListener("beforeprint", function () { /* hook for future */ });
   }
 
-  function init() {
+  async function init() {
     accounts = loadAccounts();
     bindGlobal();
+
     // First launch: migrate any legacy single-user workspace into a default profile
-    // so existing local data is preserved under a signed-in user.
     if (!accounts.users.length) {
       var legacy = localStorage.getItem(STORAGE_KEY);
       var u = { id: uid("u"), displayName: "Local Admin", role: "Admin", hasPass: false, salt: randSalt(), hash: null, createdAt: Date.now() };
@@ -7437,9 +9288,93 @@
       if (legacy) { try { localStorage.setItem(wsKey(u.id), legacy); } catch (e) {} }
       markUnlocked(u.id);
     }
-    var cu = currentUser();
-    if (!cu || needsUnlock(cu)) { renderAuthGate(cu && cu.id); return; }
-    enterApp(cu.id);
+
+    // Public trial. Served on a path Cloudflare Access bypasses, so there is no
+    // identity and no account. It must not probe /api at all: that request
+    // would redirect into the Access login page and, more importantly, a public
+    // page has no business touching the authenticated API surface.
+    if (isTrialMode()) {
+      serverSession = { active: false, email: "", status: "trial", role: "Project Manager", workspaceId: null };
+      syncState.status = "local";
+      var trialUser = currentUser();
+      if (!trialUser) {
+        trialUser = { id: uid("u"), displayName: "Demo user", role: "Project Manager",
+                      hasPass: false, salt: randSalt(), hash: null, createdAt: Date.now() };
+        accounts.users.push(trialUser);
+        accounts.currentUserId = trialUser.id;
+        saveAccounts();
+      }
+      markUnlocked(trialUser.id);
+      enterApp(trialUser.id);
+      renderTrialBanner();
+      return;
+    }
+
+    // Ask the server who we are. If it cannot answer — offline, file://, or no
+    // Worker running — the app falls back to the local profile gate unchanged.
+    var me = null;
+    try {
+      var res = await fetch("/api/me");
+      if (res.ok) me = await res.json();
+    } catch (err) {
+      console.warn("Server identity unavailable; running local-only.", err);
+    }
+
+    if (!me || !me.authenticated) {
+      syncState.status = 'local';
+      var localUser = currentUser();
+      if (!localUser || needsUnlock(localUser)) { renderAuthGate(localUser && localUser.id); return; }
+      enterApp(localUser.id);
+      return;
+    }
+
+    serverSession = {
+      active: me.status === "active",
+      email: me.email,
+      status: me.status,
+      role: me.role,
+      workspaceId: me.workspaceId
+    };
+
+    // Mirror the server identity into the local profile list so the existing
+    // role gates, avatars, and workspace key all keep working unchanged.
+    var profile = accounts.users.filter(function (u) { return u.email === me.email; })[0];
+    if (!profile) {
+      profile = { id: uid("u"), email: me.email, displayName: me.displayName || me.email.split("@")[0],
+                  role: me.role, hasPass: false, salt: randSalt(), hash: null, createdAt: Date.now() };
+      accounts.users.push(profile);
+    }
+    profile.role = me.role;
+    profile.displayName = me.displayName || profile.displayName;
+    accounts.currentUserId = profile.id;
+    markUnlocked(profile.id);
+    saveAccounts();
+
+    enterApp(profile.id);
+
+    // Surface the pending-approval count on the nav badge without making the
+    // admin go looking for it.
+    if (isServerAdmin()) adminFetchUsers();
+
+    // The setup checklist needs to know whether this user has loaded any
+    // procedures of their own.
+    if (serverSession.active) {
+      fetch("/api/guidelines").then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;
+          onboardingDocCount = (d.documents || []).filter(function (x) { return x.mine; }).length;
+          if (ui.view === "dashboard") render();
+        })
+        .catch(function () { /* checklist simply shows the step as pending */ });
+    }
+
+    if (!serverSession.active) {
+      syncState.status = 'pending';
+      renderSyncIndicator();
+      toast(me.status === "suspended"
+        ? "This account is suspended. Changes stay in this browser."
+        : "Account pending administrator approval. Changes stay in this browser.", "err");
+    }
   }
 
   // Small public API for programmatic integration and testing (no DOM side effects).
@@ -7594,6 +9529,9 @@
       },
       chartPalette: function () { return CHART; },
       advisorFindings: advisorFindings,
+      assistantRouteDimensions: assistantRouteDimensions,
+      assistantEvidencePack: assistantEvidencePack,
+      assistantGroundPack: assistantGroundPack,
       advisorHealth: function () { return advisorHealth(); },
       agentParseCommand: agentParseCommand,
       agentPlan: agentPlan,

@@ -1,0 +1,48 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "techniek-opsboard-v2",
+	"main": "worker/index.js",
+	"compatibility_date": "2026-09-19",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"assets": {
+		"directory": "public",
+		"binding": "ASSETS",
+		// Serve .html paths as files instead of redirecting them to an
+		// extensionless URL. With the default, ASSETS.fetch("/index.html")
+		// answers 307 -> "/", which the Worker handed back to the browser: /try
+		// bounced to the landing page and /request-access redirected to itself
+		// forever. The Worker owns routing here; the asset server should only
+		// return bytes.
+		"html_handling": "none",
+		// The asset server answers before the Worker by default, so "/" would be
+		// served straight from index.html and the landing page would never appear.
+		// These routes belong to the Worker; everything else (app.js, styles.css,
+		// assets/*) is still served directly as a static file.
+		"run_worker_first": [
+			"/",
+			"/app",
+			"/app/",
+			"/try",
+			"/try/",
+			"/request-access",
+			"/request-access/",
+			"/api/*"
+		]
+	},
+	"hyperdrive": [
+    {
+      "binding": "DB",
+      "id": "6e12cbd8bc314743aee2fff2230d5eb9",
+      "localConnectionString": "postgres://postgres:postgres@localhost:5432/postgres"
+    }
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"vars": {
+		"TEAM_DOMAIN": "https://calm-cell-68e8.cloudflareaccess.com",
+		"ACCESS_AUD": "011ca89b635828c14aa84ccae53b8edc5af4a909ffd699092c7503aed1da386d"
+	}
+}

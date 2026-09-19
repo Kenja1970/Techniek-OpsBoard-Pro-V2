@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Request an account for Techniek OpsBoard Pro V2" />
+    <title>Request access · Techniek OpsBoard Pro V2</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <link rel="stylesheet" href="styles.css?v=7" />
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  </head>
+  <body>
+    <main class="view" style="max-width:640px;margin:0 auto;padding:48px 24px">
+      <div class="brand" style="margin-bottom:24px">
+        <img class="brand-logo" src="assets/techniek-logo.png" alt="Techniek Engineering" />
+        <div class="brand-text"><strong>Techniek OpsBoard</strong><span>Pro V2</span></div>
+      </div>
+
+      <h1>Request an account</h1>
+      <p class="muted">
+        Accounts are approved individually. Tell us who you are and what you need it for, and an
+        administrator will be in touch. You can explore the tool on demo data at
+        <a href="/try">/try</a> in the meantime — no account needed.
+      </p>
+
+      <form id="requestForm" class="panel panel-pad mt" novalidate>
+        <div class="form-row full">
+          <label class="field-label" for="email">Work email</label>
+          <input class="input" id="email" name="email" type="email" required autocomplete="email" />
+        </div>
+        <div class="form-row full mt">
+          <label class="field-label" for="name">Name</label>
+          <input class="input" id="name" name="name" type="text" autocomplete="name" />
+        </div>
+        <div class="form-row full mt">
+          <label class="field-label" for="company">Organization</label>
+          <input class="input" id="company" name="company" type="text" autocomplete="organization" />
+        </div>
+        <div class="form-row full mt">
+          <label class="field-label" for="reason">What would you use it for?</label>
+          <textarea class="textarea" id="reason" name="reason" rows="4"></textarea>
+        </div>
+
+        <!-- Turnstile site key is public by design; the secret lives in the Worker. -->
+        <div class="cf-turnstile mt" data-sitekey="0x4AAAAAAE9MiVT_TDHzLYLf" data-theme="dark"></div>
+
+        <div class="flex mt" style="gap:8px;align-items:center">
+          <button class="btn primary" id="submitBtn" type="submit">Send request</button>
+          <span class="muted" id="status"></span>
+        </div>
+      </form>
+
+      <p class="hint mt">
+        We store only what you type here plus the country the request came from, and use it solely to
+        decide on your request. Submitting this form does not create an account or grant any access.
+      </p>
+    </main>
+
+    <script>
+      (function () {
+        "use strict";
+        var form = document.getElementById("requestForm");
+        var statusEl = document.getElementById("status");
+        var btn = document.getElementById("submitBtn");
+
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          var email = document.getElementById("email").value.trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+            statusEl.textContent = "Enter a valid email address.";
+            return;
+          }
+          // Turnstile writes its token into a hidden input in the widget.
+          var tokenField = form.querySelector('[name="cf-turnstile-response"]');
+          var token = tokenField ? tokenField.value : "";
+
+          btn.disabled = true;
+          statusEl.textContent = "Sending…";
+
+          fetch("/api/public/request-access", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: email,
+              name: document.getElementById("name").value,
+              company: document.getElementById("company").value,
+              reason: document.getElementById("reason").value,
+              turnstileToken: token,
+            }),
+          })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (res) {
+              if (!res.ok) {
+                statusEl.textContent = res.d.error || "Something went wrong. Please try again.";
+                btn.disabled = false;
+                if (window.turnstile) window.turnstile.reset();
+                return;
+              }
+              form.innerHTML = "<p><strong>Request received.</strong></p><p class='muted'>" +
+                (res.d.message || "") + "</p>";
+            })
+            .catch(function () {
+              statusEl.textContent = "Could not reach the server. Please try again.";
+              btn.disabled = false;
+              if (window.turnstile) window.turnstile.reset();
+            });
+        });
+      })();
+    </script>
+  </body>
+</html>

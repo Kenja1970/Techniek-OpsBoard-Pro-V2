@@ -22,3 +22,10 @@ serve.ps1
 # Local agent proxy secrets
 server/.env.local
 .env.local
+
+# Cloudflare Workers
+.wrangler/
+.dev.vars
+dev-test.log
+# Generated mirror of the web app served by wrangler — rebuild with `npm run sync`
+public/

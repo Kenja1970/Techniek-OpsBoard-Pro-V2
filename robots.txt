@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /$
+Allow: /try
+Allow: /request-access
+Allow: /llms.txt
+# Authenticated surfaces return a login challenge, never content. Excluding them
+# keeps crawlers out of a wall they cannot pass and keeps account data out of
+# any index.
+Disallow: /app
+Disallow: /api/

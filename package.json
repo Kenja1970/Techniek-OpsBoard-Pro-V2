@@ -1,6 +1,23 @@
 {
+  "scripts": {
+    "sync": "node scripts/sync-public.mjs",
+    "predev": "node scripts/sync-public.mjs",
+    "dev": "node scripts/dev.mjs",
+    "predeploy": "node scripts/sync-public.mjs",
+    "deploy": "wrangler deploy",
+    "migrate": "node scripts/migrate.mjs",
+    "seed:guidelines": "node scripts/seed-guidelines.mjs"
+  },
   "dependencies": {
+    "jose": "^6.2.12",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260919.1",
     "docx": "^9.7.1",
-    "playwright": "^1.61.1"
+    "pdfjs-dist": "^6.3.289",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.135.0"
   }
 }

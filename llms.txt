@@ -1,0 +1,37 @@
+# Techniek OpsBoard Pro V2
+
+> Project delivery control for engineering teams: Kanban flow with real WIP limits, PMI/PMBOK earned
+> value, A/E financial controls, and a PM Assistant that answers questions about live projects and
+> cites the clause of the user's own procedure library that governs each answer.
+
+Built by [Techniek Engineering](https://techniekengineering.com/). Accounts are individually
+approved; a full demo runs in the browser with no sign-up and no data stored on a server.
+
+## Pages
+
+- [Overview](/): what the product does and the two ways in.
+- [Live demo](/try): the complete interface on a seeded sample portfolio. Runs entirely in the
+  browser — no account, no network calls, nothing saved.
+- [Request an account](/request-access): form for requesting access. Reviewed individually.
+- [Application](/app): the product itself. Requires an approved account and authentication.
+
+## What it does
+
+- [Kanban flow](/try): pull system with WIP limits, work-item aging, and bottleneck detection.
+  Moves pass the same governance whether a person drags a card or the agent proposes it.
+- [Earned value](/try): CPI, SPI, EAC, and variance derived from the work items, with source-system
+  overrides when a P6 or ERMAS extract should take precedence. Metrics are computed, never typed.
+- [A/E financial controls](/try): earned multiplier and contribution margin against a configurable
+  target, rules of credit, integrated change control, and funded-value exposure.
+- [PM Assistant](/try): scope a question to one project, several, or the whole portfolio. Answers
+  are assembled from computed metrics and deterministic findings, paired with passages retrieved
+  from the user's own procedure library. Every figure is checked against that evidence, every
+  suggestion cites a clause or says plainly that none covers it, and conditions no procedure covers
+  are reported as a gap register.
+
+## Notes for agents and crawlers
+
+- The demo at [/try](/try) is the best place to evaluate the product; it needs no credentials.
+- [/app](/app) and all `/api/` routes are behind authentication and will not return content.
+- Demo content is fictional. It is not real client or project data.
+- Contact: [gregory@techniekengineering.com](mailto:gregory@techniekengineering.com)

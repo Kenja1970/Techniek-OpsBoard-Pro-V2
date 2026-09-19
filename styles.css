@@ -287,6 +287,9 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .table th, .table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .table th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); font-weight: 700; }
 .table tbody tr:hover { background: var(--surface-2); }
+/* Selected scope in the PM Assistant project picker — the current selection has
+   to be readable without hovering or re-reading the button labels. */
+.table tbody tr.active-row { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
 .table td.num, .table th.num { text-align: right; }
 /* Monospaced (tabular) numerals for every financial/metric surface */
 .table td, .table th, .badge, .chip, .wip-status, .column-count, .gantt-bar-label,

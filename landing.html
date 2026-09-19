@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Techniek OpsBoard Pro V2 — project delivery control for engineering teams: Kanban flow, PMI earned value, A/E financial controls, and a PM Assistant that answers from your own procedures."
+    />
+    <title>Techniek OpsBoard Pro V2 — project delivery control</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <link rel="stylesheet" href="styles.css?v=7" />
+    <style>
+      /* Landing-only layout. The app's own styles carry the design system; this
+         adds nothing but page rhythm so the two never drift apart visually. */
+      .lp { max-width: 940px; margin: 0 auto; padding: 40px 24px 72px; }
+      .lp-hero h1 { font-size: 34px; line-height: 1.2; margin: 18px 0 10px; }
+      .lp-hero p.lead { font-size: 17px; max-width: 62ch; }
+      .lp-cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 22px; }
+      .lp-cta .btn { padding: 10px 18px; font-size: 15px; }
+      .lp-section { margin-top: 44px; }
+      .lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+      .lp-foot { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-3); }
+      .lp-skip { position: absolute; left: -9999px; }
+      .lp-skip:focus { position: static; display: inline-block; margin-bottom: 12px; }
+      .lp-topnav { margin-bottom: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="lp">
+      <a class="lp-skip btn sm" href="#what">Skip to content</a>
+
+      <nav class="lp-topnav" aria-label="Site">
+        <a class="btn sm ghost" href="https://techniekengineering.com/">← Techniek Engineering</a>
+      </nav>
+
+      <header class="lp-hero">
+        <div class="brand">
+          <img class="brand-logo" src="assets/techniek-logo.png" alt="" />
+          <div class="brand-text"><strong>Techniek OpsBoard</strong><span>Pro V2</span></div>
+        </div>
+
+        <h1>Project delivery control that shows its work.</h1>
+        <p class="lead muted">
+          Kanban flow, PMI earned value, and A/E financial controls on one board — plus a PM Assistant
+          that answers questions about your live projects and cites the clause of your own procedure
+          that governs the answer.
+        </p>
+
+        <div class="lp-cta">
+          <a class="btn primary" href="/try">Try it on demo data</a>
+          <a class="btn" href="/app">Sign in</a>
+          <a class="btn ghost" href="/request-access">Request an account</a>
+        </div>
+        <p class="hint">
+          The demo needs no sign-up and saves nothing. Signing in takes you to your own workspace.
+        </p>
+      </header>
+
+      <section class="lp-section" id="what">
+        <h2>What it does</h2>
+        <div class="lp-grid mt">
+          <div class="panel panel-pad">
+            <h3>Flow you can manage</h3>
+            <p class="muted">
+              A pull system with real WIP limits, work-item aging, and bottleneck detection — not a
+              to-do list with columns. Moves are gated the same way whether a person drags a card or
+              the agent proposes it.
+            </p>
+          </div>
+          <div class="panel panel-pad">
+            <h3>Earned value that reconciles</h3>
+            <p class="muted">
+              CPI, SPI, EAC, and variance derived from the work items themselves, with source-system
+              overrides when a P6 or ERMAS extract should win. Metrics are computed, never typed.
+            </p>
+          </div>
+          <div class="panel panel-pad">
+            <h3>A/E financial controls</h3>
+            <p class="muted">
+              Earned multiplier and contribution margin against your target, rules of credit, change
+              control, and funded-value exposure — the numbers a principal actually asks about.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="lp-section">
+        <h2>The PM Assistant</h2>
+        <div class="panel panel-pad">
+          <p>
+            Pick one project, several, or the whole portfolio and ask in plain language. The answer is
+            assembled from metrics this application computed and findings it inspected, then paired
+            with passages retrieved from <strong>your</strong> procedure library.
+          </p>
+          <ul class="muted">
+            <li>Every suggestion cites the clause behind it, or says plainly that nothing covers it.</li>
+            <li>Every figure is checked against the underlying evidence before it is shown.</li>
+            <li>Conditions your procedures do not cover are reported as a gap register.</li>
+            <li>It works with no AI service configured — the answer is then composed deterministically.</li>
+          </ul>
+          <p class="hint">
+            Your procedures are private to your account. Nothing you upload is visible to other users.
+          </p>
+        </div>
+      </section>
+
+      <section class="lp-section">
+        <h2>Two ways in</h2>
+        <div class="lp-grid mt">
+          <div class="panel panel-pad">
+            <h3>Demo</h3>
+            <p class="muted">
+              The full interface on a seeded sample portfolio, running entirely in your browser. No
+              account, no network calls, nothing stored on a server. Saved work, your own procedure
+              library, and the cited Assistant need an account.
+            </p>
+            <a class="btn primary mt" href="/try">Open the demo</a>
+          </div>
+          <div class="panel panel-pad">
+            <h3>An account</h3>
+            <p class="muted">
+              Already have one? <a href="/app">Sign in</a> — you will be asked to authenticate, then
+              taken to your workspace.
+            </p>
+            <p class="muted">
+              Otherwise, accounts are reviewed individually. Tell us who you are and what you would
+              use it for, and an administrator will follow up by email. Submitting the form does not
+              create an account or grant any access.
+            </p>
+            <a class="btn mt" href="/request-access">Request an account</a>
+          </div>
+        </div>
+      </section>
+
+      <footer class="lp-foot muted">
+        <p>
+          Techniek OpsBoard Pro V2 · Built by
+          <a href="https://techniekengineering.com/">Techniek Engineering</a> ·
+          <a href="mailto:gregory@techniekengineering.com?subject=OpsBoard%20Inquiry">Contact</a>
+        </p>
+        <p>Demo content is fictional.</p>
+      </footer>
+    </div>
+  </body>
+</html>
