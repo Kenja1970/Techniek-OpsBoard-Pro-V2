@@ -52,6 +52,12 @@
 	},
 	"vars": {
 		"TEAM_DOMAIN": "https://calm-cell-68e8.cloudflareaccess.com",
-		"ACCESS_AUD": "011ca89b635828c14aa84ccae53b8edc5af4a909ffd699092c7503aed1da386d"
+		// Audience tags of the Access applications whose tokens the API accepts.
+		// Comma-separated: each Access application issues its own AUD, and this
+		// hostname is covered by more than one. The first entry is the
+		// "OpsBoard API" application, which is the one that actually fronts
+		// /api/* — the rest are tolerated so re-creating an application does not
+		// silently 401 the whole API.
+		"ACCESS_AUD": "d6337e184ea9052eeb6d672da77d4e2d6ec3947c33583596157153c0c139f837"
 	}
 }
