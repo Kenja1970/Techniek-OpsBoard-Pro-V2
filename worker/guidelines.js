@@ -245,14 +245,19 @@ export async function searchGuidelines(client, env, opts) {
   const res = await client.query(
      `WITH scoped AS (
        SELECT c.id, c.doc_id, c.heading, c.content, c.embedding, c.search_vector,
-              d.title, d.source, d.revision, d.dimension, d.triggers, d.origin
+              d.title, d.source, d.revision, d.dimension, d.triggers, d.origin,
+              d.owner_user_id, d.visibility
          FROM guideline_chunks c
          JOIN guideline_docs d ON d.id = c.doc_id
         -- Retrieval never crosses an account boundary: a user's procedures are
         -- theirs alone unless explicitly published to the whole organization.
         WHERE (d.owner_user_id = $1 OR d.visibility = 'org')
           AND d.status = 'active'
-          AND ($4::text IS NULL OR d.dimension = $4::text)
+          -- Uploaded PDFs commonly have no frontmatter/dimension. Keep them in
+          -- a dimension-scoped search as fallback; otherwise the user's own
+          -- procedures can never be cited by the Assistant.
+          AND ($4::text IS NULL OR d.dimension = $4::text
+               OR d.dimension IS NULL OR d.dimension = '')
      ),
      lex AS (
        SELECT id, ts_rank(search_vector, plainto_tsquery('english', $2)) AS score,
@@ -270,7 +275,7 @@ export async function searchGuidelines(client, env, opts) {
         LIMIT 30
      )
      SELECT s.id, s.doc_id, s.heading, s.content, s.title, s.source, s.revision,
-            s.dimension, s.triggers, s.origin,
+            s.dimension, s.triggers, s.origin, s.owner_user_id, s.visibility,
             COALESCE(lex.score, 0) AS lexical_score,
             COALESCE(vec.score, 0) AS cosine,
             (CASE WHEN lex.rank IS NULL THEN 0 ELSE 1.0 / ($5 + lex.rank) END) +
@@ -299,6 +304,7 @@ export async function searchGuidelines(client, env, opts) {
       heading: r.heading,
       passage: r.content,
       origin: r.origin,
+      userProcedure: r.visibility === "private" && r.owner_user_id === opts.userId,
       cosine: Number(Number(r.cosine).toFixed(4)),
       // Rank fusion decides order, but semantic closeness breaks ties that RRF
       // alone gets wrong: a chunk that merely contains the query words should
@@ -309,7 +315,11 @@ export async function searchGuidelines(client, env, opts) {
       triggerHit: (r.triggers || []).some((t) => t && needle.indexOf(t) !== -1),
     }))
     .filter((m) => m.triggerHit || m.cosine >= MIN_COSINE)
-    .sort((a, b) => (b.triggerHit - a.triggerHit) || (b.score - a.score))
+    // Explicit trigger bindings remain strongest. Among semantically relevant
+    // passages, prefer the user's private procedures to the shared baseline.
+    .sort((a, b) => (b.triggerHit - a.triggerHit) ||
+      (Number(b.userProcedure) - Number(a.userProcedure)) ||
+      (b.score - a.score))
     .slice(0, limit);
 
   return {

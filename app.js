@@ -2721,7 +2721,8 @@
         .slice(0, 8)
         .map(function (f) {
           return { id: f.id, severity: f.severity, dimension: f.dimension,
-                   title: f.title, evidence: f.evidence, action: f.action };
+                   title: f.title, evidence: f.evidence, action: f.action,
+                   drill: f.drill || {} };
         }),
       levers: assistantLevers(dimensions, projects),
     };
@@ -3116,6 +3117,7 @@
   function libraryLoad(force) {
     if (!serverSession.active) return;
     if (libraryUi.loading || (libraryUi.docs && !force)) return;
+    if (force) libraryUi.docs = null;
     libraryUi.loading = true;
     fetch("/api/guidelines")
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("Server returned " + r.status)); })
@@ -3129,44 +3131,122 @@
       });
   }
 
+  function libraryCleanPdfText(text) {
+    return String(text || "")
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   /**
-   * Upload markdown procedures into this user's own vector store. Frontmatter
-   * (id/title/source/revision/dimension/triggers) is parsed server-side, so a
-   * plain .md file works and a fully described one binds to findings better.
+   * Extract page-anchored passages in the browser. The source PDF never leaves
+   * the user's device; only the extracted text is sent to their private vector
+   * store. PDF.js is vendored with the app so uploads do not depend on a CDN.
+   */
+  async function libraryExtractPdf(file) {
+    if (file.size > 50 * 1024 * 1024) throw new Error("PDF is larger than the 50 MB upload limit.");
+    var pdfjs = await import("/assets/vendor/pdfjs/pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = "/assets/vendor/pdfjs/pdf.worker.mjs";
+    var bytes = new Uint8Array(await file.arrayBuffer());
+    var pdf = await pdfjs.getDocument({ data: bytes, useSystemFonts: true }).promise;
+    var chunks = [];
+
+    for (var p = 1; p <= pdf.numPages; p++) {
+      libraryUi.busy = "Reading " + file.name + " — page " + p + " of " + pdf.numPages + "…";
+      if (p === 1 || p % 20 === 0) render();
+
+      var content = await (await pdf.getPage(p)).getTextContent();
+      var lines = [], buf = "", lastY = null, lastEndX = null, size = 10;
+      function pushLine() {
+        var t = libraryCleanPdfText(buf);
+        if (t && !/^\d+$/.test(t)) lines.push(t);
+        buf = ""; lastEndX = null;
+      }
+      content.items.forEach(function (item) {
+        if (!item.str) return;
+        var y = Math.round(item.transform[5]);
+        var x = item.transform[4];
+        size = Math.abs(item.transform[0]) || size;
+        if (lastY !== null && Math.abs(y - lastY) > 2) pushLine();
+        if (lastEndX !== null && x - lastEndX > size * 0.22 && !/\s$/.test(buf)) buf += " ";
+        buf += item.str;
+        lastEndX = x + (item.width || 0);
+        lastY = y;
+      });
+      pushLine();
+
+      var pageText = libraryCleanPdfText(lines.join(" "));
+      for (var start = 0; start < pageText.length; start += 1200) {
+        var passage = pageText.slice(start, start + 1200).trim();
+        // Avoid splitting a word when practical.
+        if (start + 1200 < pageText.length) {
+          var lastSpace = passage.lastIndexOf(" ");
+          if (lastSpace > 900) passage = passage.slice(0, lastSpace);
+        }
+        if (passage.length >= 160) {
+          chunks.push({ heading: "p. " + p, content: passage });
+          start += passage.length - 1200;
+        }
+      }
+    }
+    if (!chunks.length) throw new Error("No readable text was found. This may be a scanned PDF that requires OCR.");
+    return chunks;
+  }
+
+  async function libraryPostDocument(file) {
+    var id = file.name.replace(/\.(md|markdown|txt|pdf)$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    var title = file.name.replace(/\.[^.]+$/, "");
+
+    if (/\.pdf$/i.test(file.name)) {
+      var chunks = await libraryExtractPdf(file);
+      var batch = 100;
+      for (var start = 0; start < chunks.length; start += batch) {
+        libraryUi.busy = "Indexing " + file.name + " — " +
+          Math.min(start + batch, chunks.length) + " of " + chunks.length + " passages…";
+        render();
+        var payload = start === 0
+          ? { id: id, title: title, source: file.name, origin: "upload", chunks: chunks.slice(start, start + batch) }
+          : { id: id, append: true, chunks: chunks.slice(start, start + batch) };
+        var pdfRes = await fetch("/api/guidelines", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+        });
+        var pdfData = await pdfRes.json();
+        if (!pdfRes.ok) throw new Error(pdfData.detail || pdfData.error || "PDF indexing failed.");
+      }
+      return;
+    }
+
+    var markdown = await file.text();
+    var res = await fetch("/api/guidelines", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id, title: title, source: file.name, markdown: markdown })
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Upload failed.");
+  }
+
+  /**
+   * Upload Markdown, text, or PDF procedures into this user's private vector
+   * store. Markdown frontmatter (id/title/source/revision/dimension/triggers)
+   * is parsed server-side; PDFs receive page-anchored citations.
    */
   function libraryUploadPrompt() {
-    var input = el("input", { type: "file", accept: ".md,.markdown,.txt", multiple: "multiple" });
-    input.addEventListener("change", function () {
+    var input = el("input", { type: "file", accept: ".md,.markdown,.txt,.pdf,application/pdf", multiple: "multiple" });
+    input.addEventListener("change", async function () {
       var files = Array.prototype.slice.call(input.files || []);
       if (!files.length) return;
       libraryUi.busy = "Uploading " + files.length + " file(s)…";
       render();
 
-      var done = 0, failed = 0;
-      files.forEach(function (file) {
-        var reader = new FileReader();
-        reader.onload = function () {
-          var id = file.name.replace(/\.(md|markdown|txt)$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-          fetch("/api/guidelines", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: id, title: file.name.replace(/\.[^.]+$/, ""), markdown: String(reader.result) })
-          })
-            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-            .then(function (res) {
-              if (!res.ok) { failed++; toast(file.name + ": " + (res.d.detail || res.d.error), "err"); }
-            })
-            .catch(function (e) { failed++; toast(file.name + ": " + e.message, "err"); })
-            .then(function () {
-              if (++done === files.length) {
-                libraryUi.busy = "";
-                toast((files.length - failed) + " procedure(s) added to your library", failed ? "err" : "ok");
-                libraryLoad(true);
-              }
-            });
-        };
-        reader.readAsText(file);
-      });
+      var failed = 0;
+      for (var i = 0; i < files.length; i++) {
+        try { await libraryPostDocument(files[i]); }
+        catch (e) { failed++; toast(files[i].name + ": " + e.message, "err"); }
+      }
+      libraryUi.busy = "";
+      toast((files.length - failed) + " procedure(s) added to your library", failed ? "err" : "ok");
+      libraryLoad(true);
     });
     input.click();
   }
@@ -3210,7 +3290,7 @@
       "dimension, triggers) makes them bind to findings more precisely."));
 
     var row = el("div", { class: "flex wrap mb", style: "gap:8px" });
-    row.appendChild(mkBtn(libraryUi.busy || "Upload procedures (.md)", "btn primary", libraryUploadPrompt));
+    row.appendChild(mkBtn(libraryUi.busy || "Upload procedures (.md or .pdf)", "btn primary", libraryUploadPrompt));
     row.appendChild(mkBtn("Refresh", "btn ghost", function () { libraryLoad(true); }));
     panel.appendChild(row);
 
@@ -3450,7 +3530,10 @@
       "dependency gates — and you approve a diff before anything changes."));
     var row = el("div", { class: "flex wrap", style: "gap:8px" });
     row.appendChild(mkBtn("Propose fixes from these findings", "btn", function () {
-      var actions = agentActionsFromFindings();
+      // Only findings selected by the Ask question and project scope. The old
+      // path used every portfolio finding, so "Act on this" proposed unrelated
+      // work the user had not asked about.
+      var actions = agentActionsFromFindings(pack.findings || []);
       if (!actions.length) { toast("Nothing to propose — no actionable findings.", "err"); return; }
       ui.agentPlan = agentPlan(actions);
       ui.agentSource = "Derived from the findings behind this answer";
@@ -3776,9 +3859,10 @@
   }
 
   // Build a WIP-relief plan from the live board state (recommendation mode).
-  function agentRebalanceActions(reason) {
+  function agentRebalanceActions(reason, boardFilter) {
     var out = [];
     state.boards.forEach(function (b) {
+      if (boardFilter && !boardFilter[b.id]) return;
       (b.columns || []).forEach(function (col, idx) {
         if (!col.wip || idx === 0) return;
         var inCol = boardCards(b.id).filter(function (c) { return c.columnId === col.id && !isDone(c); })
@@ -3795,9 +3879,18 @@
   }
 
   // Turn Advisor findings into concrete proposed actions (recommendation mode).
-  function agentActionsFromFindings() {
-    var out = agentRebalanceActions("WIP relief");
-    advisorFindings().forEach(function (f) {
+  function agentActionsFromFindings(findings) {
+    findings = findings || advisorFindings();
+    var wipBoards = {};
+    findings.forEach(function (f) {
+      var d = f.drill || {};
+      if (/wip.*(breach|limit)|over.?wip/i.test(f.title) && d.boardId) {
+        wipBoards[d.boardId] = true;
+      }
+    });
+    var out = agentRebalanceActions("WIP relief",
+      Object.keys(wipBoards).length ? wipBoards : {});
+    findings.forEach(function (f) {
       var d = f.drill || {};
       if (/unassigned/i.test(f.title) && d.cardId) {
         // Suggest the least-loaded active person on that board's roster.
@@ -4118,32 +4211,64 @@
   function renderAgentPlanPreview(host, plan, sourceLabel) {
     host.innerHTML = "";
     if (!plan.length) { host.appendChild(el("div", { class: "empty" }, "Nothing to propose — the request produced no actions.")); return; }
+    plan.forEach(function (s) {
+      if (s.selected == null) s.selected = s.status === "ok";
+    });
+    function selectedCount() {
+      return plan.filter(function (s) { return s.status === "ok" && s.selected; }).length;
+    }
     var okCount = plan.filter(function (s) { return s.status === "ok"; }).length;
     var head = el("div", { class: "panel-pad" });
     head.innerHTML = "<h2 style='margin:0'>Proposed changes</h2><div class='muted'>" + esc(sourceLabel || "") +
-      " — " + okCount + " of " + plan.length + " action(s) will apply. Blocked and invalid actions are shown with the reason and are never applied.</div>";
+      " — choose which validated actions to apply. Blocked and invalid actions are shown with the reason and can never be selected.</div>";
     host.appendChild(head);
     plan.forEach(function (s) {
       var cls = s.status === "ok" ? "ok" : s.status === "blocked" ? "warn" : "danger";
       var row = el("div", { class: "agent-step" });
+      if (s.status === "ok") {
+        var choose = el("input", { type: "checkbox", class: "checkbox", title: "Include this change" });
+        choose.checked = s.selected;
+        choose.addEventListener("change", function () {
+          s.selected = choose.checked;
+          refreshSelection();
+        });
+        row.appendChild(choose);
+      }
       row.innerHTML =
         "<div class='as-head'><span class='badge " + cls + "'>" + esc(s.status) + "</span><strong>" + esc(s.describe) + "</strong></div>" +
         (s.action.reason ? "<div class='as-reason'>" + esc(s.action.reason) + "</div>" : "") +
         (s.message ? "<div class='as-msg'>" + esc(s.message) + "</div>" : "");
+      if (s.status === "ok") row.insertBefore(choose, row.firstChild);
       host.appendChild(row);
     });
     var foot = el("div", { class: "panel-pad flex wrap", style: "gap:8px" });
-    var applyBtn = el("button", { class: "btn primary" }, "Apply " + okCount + " change" + (okCount === 1 ? "" : "s"));
-    applyBtn.disabled = !okCount || !canEdit();
+    var applyBtn = el("button", { class: "btn primary" });
+    function refreshSelection() {
+      var count = selectedCount();
+      applyBtn.textContent = "Apply " + count + " change" + (count === 1 ? "" : "s");
+      applyBtn.disabled = !count || !canEdit();
+    }
     applyBtn.addEventListener("click", function () {
-      var res = agentApply(plan);
+      var selected = plan.filter(function (s) { return s.status !== "ok" || s.selected; });
+      var res = agentApply(selected);
       toast(res.applied + " change(s) applied — undo with Ctrl+Z", "ok");
       ui.agentPlan = null; ui.agentSource = "";
       render();
     });
+    var selectAll = el("button", { class: "btn sm ghost" }, "Select all");
+    selectAll.addEventListener("click", function () {
+      plan.forEach(function (s) { if (s.status === "ok") s.selected = true; });
+      renderAgentPlanPreview(host, plan, sourceLabel);
+    });
+    var selectNone = el("button", { class: "btn sm ghost" }, "Select none");
+    selectNone.addEventListener("click", function () {
+      plan.forEach(function (s) { if (s.status === "ok") s.selected = false; });
+      renderAgentPlanPreview(host, plan, sourceLabel);
+    });
     var discard = el("button", { class: "btn" }, "Discard");
     discard.addEventListener("click", function () { ui.agentPlan = null; ui.agentSource = ""; render(); });
-    foot.appendChild(applyBtn); foot.appendChild(discard);
+    refreshSelection();
+    foot.appendChild(applyBtn); foot.appendChild(selectAll); foot.appendChild(selectNone); foot.appendChild(discard);
     foot.appendChild(el("span", { class: "hint" }, "Applies as a single undo step and is recorded in the audit trail as agent-attributed."));
     host.appendChild(foot);
   }
@@ -6944,6 +7069,10 @@
   async function adminFetchUsers() {
     adminState.loading = true;
     adminState.error = "";
+    // Account creation/deletion also creates or removes workspaces. Refresh
+    // both panels together so the admin never sees an updated user row beside
+    // stale project-data ownership.
+    adminState.workspacesLoaded = false;
     try {
       var res = await fetch("/api/admin/users");
       if (!res.ok) {

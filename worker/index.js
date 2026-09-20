@@ -32,7 +32,7 @@ async function identify(request, env, url) {
   // DEV_IDENTITY_BYPASS, so the branch is dead in production.
   if (env.DEV_IDENTITY_BYPASS === '1' && isLoopback(url)) {
     const asUser = request.headers.get('X-Dev-Email') || url.searchParams.get('dev_email');
-    return { email: asUser || 'localdev@techniek.local', sub: 'local-dev' };
+    return { email: asUser || env.DEV_EMAIL || 'localdev@techniek.local', sub: 'local-dev' };
   }
   return await verifyAccessJWT(request, env);
 }
