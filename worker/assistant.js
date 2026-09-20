@@ -40,11 +40,21 @@ const ASSISTANT_SYSTEM_PROMPT = [
   "Length: at most 4 moves and 2 avoid items. Each field is one or two sentences. Quote nothing",
   "verbatim from CLAUSES — the application renders the cited text itself; you reference it by id.",
   "",
+  "Actionable adjustments ('actions' array):",
+  "Generate 1 to 5 concrete, validated board operations directly tailored to achieve the question's goal.",
+  "Supported ops (use ONLY ids from EVIDENCE):",
+  '  { "op":"move",       "cardId":"<id>", "columnId":"<id>", "reason":"<why>" }',
+  '  { "op":"update",     "cardId":"<id>", "fields":{ "estimateHours":<n>, "progress":<0-100>, "priority":"critical|high|medium|low", "due":"YYYY-MM-DD" }, "reason":"<why>" }',
+  '  { "op":"reassign",   "cardId":"<id>", "resourceId":"<id>", "allocationPct":<0-100>, "reason":"<why>" }',
+  '  { "op":"reschedule", "cardId":"<id>", "days":<integer, negative pulls earlier, positive pushes>, "reason":"<why>" }',
+  '  { "op":"changeorder","projectId":"<id>", "title":"<text>", "budgetDelta":<n>, "scheduleDeltaDays":<n>, "category":"Scope|Budget|Schedule", "reason":"<why>" }',
+  "",
   "Return ONLY a JSON object:",
   '{ "headline": "<one sentence judgement>",',
   '  "situation": "<2-3 sentences of grounded context>",',
   '  "moves": [ { "action": "<what to do>", "effect": "<expected effect>", "tradeoff": "<what it costs>",',
   '              "clauseIds": ["<id from CLAUSES>"], "leverIds": ["<card or resource id>"] } ],',
+  '  "actions": [ <concrete operations above mapping directly to your recommendations to achieve the goal> ],',
   '  "avoid": [ "<what not to do and why>" ],',
   '  "gaps": [ "<condition your procedures do not cover, if any>" ] }',
 ].join("\n");
@@ -103,16 +113,30 @@ function renderEvidence(pack) {
 
   const cards = (pack.levers && pack.levers.cards) || [];
   if (cards.length) {
-    lines.push("\nWORK ITEMS you may name (id · title · stage · age · progress · estimate):");
-    cards.forEach((c) => lines.push("  " + c.id + " · " + c.title + " · " + c.stage + " · " +
-      c.ageDays + "d · " + c.progress + "% · " + c.estimateHours + "h"));
+    lines.push("\nWORK ITEMS (cards) you may adjust or cite (cardId · title · boardId · columnId · stage · age · progress · estimate · due · assigneeId):");
+    cards.forEach((c) => lines.push("  cardId: " + c.id + " · \"" + c.title + "\" · boardId: " + (c.boardId || "") + " · columnId: " + (c.columnId || "") + " (" + (c.stage || "") + ")" +
+      (c.projectId ? " · projectId: " + c.projectId : "") +
+      (c.assigneeId ? " · assigneeId: " + c.assigneeId : "") +
+      " · age: " + c.ageDays + "d · progress: " + c.progress + "% · estimate: " + c.estimateHours + "h" +
+      (c.due ? " · due: " + c.due : "")));
+  }
+
+  const boards = (pack.levers && pack.levers.boards) || [];
+  if (boards.length) {
+    lines.push("\nAVAILABLE BOARD STAGES for moving cards:");
+    boards.forEach((b) => {
+      lines.push("  Board " + b.id + " (\"" + b.name + "\"):");
+      (b.columns || []).forEach((col) => {
+        lines.push("    columnId: " + col.id + " (\"" + col.name + "\", WIP limit: " + (col.wip || "none") + ")");
+      });
+    });
   }
 
   const people = (pack.levers && pack.levers.resources) || [];
   if (people.length) {
-    lines.push("\nPEOPLE you may name (id · name · role · utilization):");
-    people.forEach((p) => lines.push("  " + p.id + " · " + p.name + " · " + p.role + " · " +
-      p.utilPct + "%" + (p.overAllocated ? " (OVER-ALLOCATED)" : "")));
+    lines.push("\nPEOPLE you may assign or rebalance (resourceId · name · role · utilization):");
+    people.forEach((p) => lines.push("  resourceId: " + p.id + " · " + p.name + " · " + p.role + " · " +
+      p.utilPct + "%" + (p.overAllocated ? " (OVER-ALLOCATED)" : "") + (p.hasHeadroom ? " (AVAILABLE CAPACITY)" : "")));
   }
 
   const cos = (pack.levers && pack.levers.changeOrders) || [];
@@ -218,6 +242,7 @@ export async function advise(env, pack) {
       headline: String(parsed.headline || ""),
       situation: String(parsed.situation || ""),
       moves: Array.isArray(parsed.moves) ? parsed.moves.slice(0, 8) : [],
+      actions: Array.isArray(parsed.actions) ? parsed.actions.slice(0, 12) : [],
       avoid: Array.isArray(parsed.avoid) ? parsed.avoid.slice(0, 5) : [],
       gaps: Array.isArray(parsed.gaps) ? parsed.gaps.slice(0, 5) : [],
     },

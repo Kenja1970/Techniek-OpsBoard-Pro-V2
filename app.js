@@ -2578,48 +2578,94 @@
       : null;
     var cards = (inScope ? state.cards.filter(function (c) { return inScope[c.projectId]; }) : state.cards)
       .filter(function (c) { return !isDone(c); });
-    var levers = { cards: [], resources: [], changeOrders: [] };
+    var levers = { cards: [], resources: [], changeOrders: [], boards: [] };
 
-    if (dimensions.indexOf("Flow") !== -1 || dimensions.indexOf("Schedule") !== -1) {
-      levers.cards = cards.slice()
-        .sort(function (a, b) { return cardAgeDays(b) - cardAgeDays(a); })
-        .slice(0, 8)
-        .map(function (c) {
-          var col = (state.boards.filter(function (b) { return b.id === c.boardId; })[0] || { columns: [] })
-            .columns.filter(function (x) { return x.id === c.columnId; })[0];
-          return { id: c.id, title: c.title, stage: col ? col.name : "", ageDays: cardAgeDays(c),
-                   progress: c.progress || 0, estimateHours: c.estimateHours || 0, due: c.due || "" };
-        });
-    }
-
-    if (dimensions.indexOf("Resource") !== -1 || dimensions.indexOf("Margin") !== -1 || dimensions.indexOf("Schedule") !== -1) {
-      // Only people actually holding open work on the selected project. Naming
-      // the portfolio's busiest engineer in advice about a project they are not
-      // staffed on is worse than naming nobody.
-      var onProject = null;
-      if (inScope) {
-        onProject = {};
-        cards.forEach(function (c) {
-          (c.resourceAssignments || []).forEach(function (a) { if (a.resourceId) onProject[a.resourceId] = true; });
-          if (c.assigneeId) onProject[c.assigneeId] = true;
-        });
+    // Always provide the most relevant cards in scope so the assistant and planner
+    // can formulate concrete, card-level adjustments for Schedule, Cost, Margin, or Flow.
+    var sortedCards = cards.slice().sort(function (a, b) {
+      var duA = daysUntil(a.due), duB = daysUntil(b.due);
+      var lateA = duA != null && duA < 0 ? -duA : 0;
+      var lateB = duB != null && duB < 0 ? -duB : 0;
+      if (lateA !== lateB) return lateB - lateA; // Overdue items first
+      if (dimensions.indexOf("Cost") !== -1 || dimensions.indexOf("Margin") !== -1) {
+        if (!a.estimateHours && b.estimateHours) return -1; // Unestimated first
+        if (!b.estimateHours && a.estimateHours) return 1;
+        var remA = Math.max(0, (a.estimateHours || 0) - (a.loggedHours || 0));
+        var remB = Math.max(0, (b.estimateHours || 0) - (b.loggedHours || 0));
+        return remB - remA;
       }
-      levers.resources = (state.resources || [])
-        .filter(function (r) { return !onProject || onProject[r.id]; })
-        // resourceUtil().util is already a percentage — the rest of the app
-        // compares it against the 110% over-allocation threshold directly.
-        .map(function (r) {
-          var u = resourceUtil(r);
-          return { id: r.id, name: r.name, role: r.role,
-                   utilPct: Math.round(u.util), overAllocated: u.util > 110,
-                   remainingHours: Math.round(u.allocated), capacityHrs: u.capacity };
-        })
-        .filter(function (r) { return r.utilPct > 0; })
-        .sort(function (a, b) { return b.utilPct - a.utilPct; })
-        .slice(0, 8);
-    }
+      return cardAgeDays(b) - cardAgeDays(a);
+    });
 
-    if (dimensions.indexOf("Governance") !== -1) {
+    levers.cards = sortedCards.slice(0, 16).map(function (c) {
+      var col = (state.boards.filter(function (b) { return b.id === c.boardId; })[0] || { columns: [] })
+        .columns.filter(function (x) { return x.id === c.columnId; })[0];
+      return {
+        id: c.id,
+        title: c.title,
+        boardId: c.boardId,
+        columnId: c.columnId,
+        stage: col ? col.name : "",
+        projectId: c.projectId || null,
+        assigneeId: c.assigneeId || null,
+        ageDays: cardAgeDays(c),
+        progress: c.progress || 0,
+        estimateHours: c.estimateHours || 0,
+        loggedHours: c.loggedHours || 0,
+        priority: c.priority || "medium",
+        due: c.due || ""
+      };
+    });
+
+    // Boards & columns relevant for moving cards
+    var bIds = {};
+    levers.cards.forEach(function (c) { if (c.boardId) bIds[c.boardId] = true; });
+    if (!Object.keys(bIds).length && state.activeBoardId) bIds[state.activeBoardId] = true;
+    levers.boards = state.boards.filter(function (b) { return bIds[b.id]; }).map(function (b) {
+      return {
+        id: b.id,
+        name: b.name,
+        columns: (b.columns || []).map(function (col) {
+          return { id: col.id, name: col.name, wip: col.wip || 0 };
+        })
+      };
+    });
+
+    // People holding open work on the selected project, plus active staff with headroom for relief
+    var onProject = null;
+    if (inScope) {
+      onProject = {};
+      cards.forEach(function (c) {
+        (c.resourceAssignments || []).forEach(function (a) { if (a.resourceId) onProject[a.resourceId] = true; });
+        if (c.assigneeId) onProject[c.assigneeId] = true;
+      });
+    }
+    levers.resources = (state.resources || [])
+      .filter(function (r) {
+        if (!onProject) return true;
+        if (onProject[r.id]) return true;
+        var u = resourceUtil(r).util;
+        return r.status === "Active" && r.type === "Employee" && u < 90;
+      })
+      .map(function (r) {
+        var u = resourceUtil(r);
+        return {
+          id: r.id,
+          name: r.name,
+          role: r.role,
+          utilPct: Math.round(u.util),
+          overAllocated: u.util > 110,
+          hasHeadroom: u.util < 90,
+          remainingHours: Math.round(u.allocated),
+          capacityHrs: u.capacity,
+          onProject: onProject ? !!onProject[r.id] : true
+        };
+      })
+      .filter(function (r) { return r.utilPct > 0 || r.hasHeadroom; })
+      .sort(function (a, b) { return b.utilPct - a.utilPct; })
+      .slice(0, 10);
+
+    if (dimensions.indexOf("Governance") !== -1 || dimensions.indexOf("Cost") !== -1 || dimensions.indexOf("Schedule") !== -1) {
       levers.changeOrders = (state.changeOrders || [])
         .filter(function (co) { return !inScope || inScope[co.projectId]; })
         .filter(function (co) { return co.status === "Requested" || co.status === "Under Review"; })
@@ -2903,8 +2949,226 @@
     };
   }
 
+  /**
+   * Parse the scoped project(s), cards, resources, and findings to formulate
+   * goal-directed board adjustments to achieve the user's objective in "Ask".
+   * Used whenever the model does not propose valid structured actions or in
+   * deterministic mode, ensuring "Act on this" always refreshes with actionable
+   * adjustments tailored to the question.
+   */
+  function assistantGoalActions(question, pack, answer) {
+    var q = " " + String(question || "").toLowerCase() + " ";
+    var dims = (pack && pack.dimensions) || [];
+    var cards = ((pack && pack.levers) || {}).cards || [];
+    var people = ((pack && pack.levers) || {}).resources || [];
+    var boards = ((pack && pack.levers) || {}).boards || [];
+    var metrics = (pack && pack.metrics) || {};
+    var findings = (pack && pack.findings) || [];
+    var actions = [];
+    var seenCards = {};
+
+    var isSchedule = dims.indexOf("Schedule") !== -1 || dims.indexOf("Flow") !== -1 ||
+      /schedule|delay|late|due|overdue|spi|slip|speed|recover|deadline|finish|time/i.test(q);
+    var isCostMargin = dims.indexOf("Cost") !== -1 || dims.indexOf("Margin") !== -1 ||
+      /profit|margin|cpi|cost|eac|budget|money|burn|revenue|multiplier|expensive/i.test(q);
+    var isResource = dims.indexOf("Resource") !== -1 ||
+      /resource|workload|overload|staff|who is|utiliz|allocat/i.test(q);
+
+    var overPeople = people.filter(function (p) { return p.overAllocated; });
+    var reliefPeople = people.filter(function (p) { return p.hasHeadroom || p.utilPct < 90; });
+    if (!reliefPeople.length) {
+      reliefPeople = state.resources.filter(function (r) {
+        return r.status === "Active" && r.type === "Employee" && resourceUtil(r).util < 90;
+      }).map(function (r) {
+        var u = resourceUtil(r);
+        return { id: r.id, name: r.name, role: r.role, utilPct: Math.round(u.util) };
+      });
+    }
+
+    // 1. SCHEDULE / FLOW ADJUSTMENTS:
+    if (isSchedule) {
+      // Overdue work in scope: establish realistic due dates and elevate priority
+      var overdueCards = cards.filter(function (c) {
+        var d = daysUntil(c.due);
+        return d != null && d < 0;
+      });
+      overdueCards.slice(0, 3).forEach(function (c) {
+        seenCards[c.id] = true;
+        if (c.progress >= 40) {
+          actions.push({
+            op: "reschedule",
+            cardId: c.id,
+            days: 7,
+            reason: 'Schedule recovery: extend due date by +7 days on "' + c.title + '" (' + c.progress + '% done) to establish committed finish'
+          });
+        } else if (c.priority !== "critical") {
+          actions.push({
+            op: "update",
+            cardId: c.id,
+            fields: { priority: "critical" },
+            reason: 'Schedule focus: elevate overdue card "' + c.title + '" to critical priority'
+          });
+        }
+      });
+
+      // WIP relief on boards in scope
+      var wipBoards = {};
+      findings.forEach(function (f) {
+        var d = f.drill || {};
+        if (/wip.*(breach|limit)|over.?wip/i.test(f.title) && d.boardId) wipBoards[d.boardId] = true;
+      });
+      var rebalance = agentRebalanceActions("WIP relief", Object.keys(wipBoards).length ? wipBoards : null);
+      rebalance.slice(0, 2).forEach(function (a) {
+        actions.push(a);
+        if (a.cardId) seenCards[a.cardId] = true;
+      });
+
+      // Over-allocated staff on schedule-critical cards: reassign to available person
+      if (overPeople.length && reliefPeople.length) {
+        var loadedPerson = overPeople[0];
+        var reliefPerson = reliefPeople[0];
+        var heavyCard = cards.filter(function (c) {
+          return c.assigneeId === loadedPerson.id && !seenCards[c.id];
+        })[0] || cards[0];
+        if (heavyCard && !seenCards[heavyCard.id]) {
+          seenCards[heavyCard.id] = true;
+          actions.push({
+            op: "reassign",
+            cardId: heavyCard.id,
+            resourceId: reliefPerson.id,
+            allocationPct: 100,
+            reason: 'Schedule acceleration: offload "' + heavyCard.title + '" from over-allocated ' + loadedPerson.name + ' (' + loadedPerson.utilPct + '%) to ' + reliefPerson.name + ' (' + reliefPerson.utilPct + '%)'
+          });
+        }
+      }
+
+      // If SPI is significantly degraded (< 0.85) on a project in scope: propose CCB schedule change order
+      if (metrics.spi != null && metrics.spi < 0.85) {
+        var pTarget = (pack.scope && pack.scope.projectIds && pack.scope.projectIds[0])
+          ? projectById(pack.scope.projectIds[0]) : state.projects[0];
+        if (pTarget) {
+          actions.push({
+            op: "changeorder",
+            projectId: pTarget.id,
+            title: "Schedule baseline recovery for " + pTarget.name,
+            budgetDelta: 0,
+            scheduleDeltaDays: 14,
+            category: "Schedule",
+            reason: "Formal CCB change order to reset schedule baseline after SPI fell to " + metrics.spi.toFixed(2)
+          });
+        }
+      }
+    }
+
+    // 2. PROFITABILITY / MARGIN / COST / CPI ADJUSTMENTS:
+    if (isCostMargin) {
+      // Reassign work away from over-allocated high-cost/senior rates to relieve margin
+      if (overPeople.length && reliefPeople.length) {
+        var op = overPeople[0];
+        var rp = reliefPeople[0];
+        var targetCard = cards.filter(function (c) {
+          return c.assigneeId === op.id && !seenCards[c.id];
+        })[0] || cards[0];
+        if (targetCard && !seenCards[targetCard.id]) {
+          seenCards[targetCard.id] = true;
+          actions.push({
+            op: "reassign",
+            cardId: targetCard.id,
+            resourceId: rp.id,
+            allocationPct: 100,
+            reason: 'Margin protection: shift "' + targetCard.title + '" from ' + op.name + ' (' + op.utilPct + '% loaded) to ' + rp.name + ' (' + rp.utilPct + '%) to correct labor rate mix'
+          });
+        }
+      }
+
+      // Unestimated cards in scope: set estimate to prevent EAC distortion
+      var unestimated = cards.filter(function (c) { return !c.estimateHours && !seenCards[c.id]; });
+      unestimated.slice(0, 2).forEach(function (c) {
+        seenCards[c.id] = true;
+        actions.push({
+          op: "update",
+          cardId: c.id,
+          fields: { estimateHours: 8 },
+          reason: 'Cost control: unestimated card "' + c.title + '" distorts BAC/EAC; seed 8h placeholder'
+        });
+      });
+
+      // Cost overrun or negative VAC (EAC > BAC): propose commercial budget change order
+      var costOverrun = (metrics.eac && metrics.bac && metrics.eac > metrics.bac) ||
+        (metrics.cpi && metrics.cpi < 0.9);
+      if (costOverrun) {
+        var pCostTarget = (pack.scope && pack.scope.projectIds && pack.scope.projectIds[0])
+          ? projectById(pack.scope.projectIds[0]) : state.projects[0];
+        if (pCostTarget) {
+          var delta = (metrics.eac && metrics.bac && metrics.eac > metrics.bac)
+            ? Math.round(metrics.eac - metrics.bac)
+            : Math.max(1000, Math.round(pCostTarget.budget * 0.1));
+          actions.push({
+            op: "changeorder",
+            projectId: pCostTarget.id,
+            title: "Budget reconciliation & scope authorization for " + pCostTarget.name,
+            budgetDelta: delta,
+            scheduleDeltaDays: 0,
+            category: "Budget",
+            reason: "Margin protection: formal CCB change order to authorize additional budget for forecasted variance (EAC " + (metrics.eac || "overrun") + ")"
+          });
+        }
+      }
+
+      // Check for aging work stuck in progress
+      var agingCards = cards.filter(function (c) { return c.ageDays > 40 && !seenCards[c.id]; });
+      if (agingCards[0] && !seenCards[agingCards[0].id]) {
+        seenCards[agingCards[0].id] = true;
+        actions.push({
+          op: "update",
+          cardId: agingCards[0].id,
+          fields: { priority: "high" },
+          reason: 'Cost control: aging card "' + agingCards[0].title + '" (' + agingCards[0].ageDays + 'd old) risks cost creep; elevate priority to finish'
+        });
+      }
+    }
+
+    // 3. RESOURCE LEVELING ADJUSTMENTS (if not already handled):
+    if (isResource && !actions.length) {
+      if (overPeople.length && reliefPeople.length) {
+        overPeople.slice(0, 2).forEach(function (op, idx) {
+          var rp = reliefPeople[idx % reliefPeople.length];
+          var cTarget = cards.filter(function (c) { return c.assigneeId === op.id && !seenCards[c.id]; })[0];
+          if (cTarget) {
+            seenCards[cTarget.id] = true;
+            actions.push({
+              op: "reassign",
+              cardId: cTarget.id,
+              resourceId: rp.id,
+              allocationPct: 100,
+              reason: 'Resource leveling: reassign "' + cTarget.title + '" from ' + op.name + ' (' + op.utilPct + '%) to ' + rp.name + ' (' + rp.utilPct + '%)'
+            });
+          }
+        });
+      }
+    }
+
+    // 4. Default / Fallback adjustments:
+    if (!actions.length) {
+      var unassigned = cards.filter(function (c) { return !c.assigneeId; });
+      if (unassigned[0] && reliefPeople[0]) {
+        actions.push({
+          op: "reassign",
+          cardId: unassigned[0].id,
+          resourceId: reliefPeople[0].id,
+          allocationPct: 100,
+          reason: 'Assign unassigned card "' + unassigned[0].title + '" to ' + reliefPeople[0].name
+        });
+      }
+      var genericRebalance = agentRebalanceActions("WIP relief");
+      if (genericRebalance.length) actions.push(genericRebalance[0]);
+    }
+
+    return actions.slice(0, 6);
+  }
+
   /* ---------- PM Assistant surface ---------- */
-  var assistantUi = { question: "", running: false, result: null, pack: null, error: "", model: "" };
+  var assistantUi = { question: "", running: false, result: null, pack: null, error: "", model: "", plan: null, planSource: "" };
 
   var ASSISTANT_EXAMPLES = [
     "How can I improve schedule?",
@@ -2918,6 +3182,8 @@
     assistantUi.running = true;
     assistantUi.error = "";
     assistantUi.result = null;
+    assistantUi.plan = null;
+    assistantUi.planSource = "";
     render();
 
     try {
@@ -2926,6 +3192,7 @@
       assistantUi.pack = pack;
 
       var used = null;
+      var rawModelActions = [];
       if (serverSession.active) {
         var res = await fetch("/api/assistant/advise", {
           method: "POST",
@@ -2936,6 +3203,7 @@
         if (data.ok) {
           used = assistantValidate(data.answer, pack);
           assistantUi.model = data.model || "";
+          rawModelActions = (data.answer && Array.isArray(data.answer.actions)) ? data.answer.actions : [];
         } else if (data.configured === false) {
           assistantUi.error = "";   // expected: fall back quietly
         } else {
@@ -2951,9 +3219,33 @@
       // Every suggestion should point at something in the user's own library.
       await assistantBackfillCitations(assistantUi.result, pack);
       if (!state.settings.onboardingAsked) { state.settings.onboardingAsked = true; save(); }
+
+      // Formulate actionable board adjustments specifically tailored to the current question:
+      var candidateActions = [];
+      if (rawModelActions.length) {
+        var san = agentSanitizeActions(rawModelActions);
+        candidateActions = san.actions;
+      }
+      if (!candidateActions.length) {
+        candidateActions = assistantGoalActions(question, pack, assistantUi.result);
+      }
+      if (candidateActions.length) {
+        assistantUi.plan = agentPlan(candidateActions);
+        assistantUi.planSource = 'Adjustments to achieve: "' + question + '"';
+      } else {
+        assistantUi.plan = null;
+        assistantUi.planSource = "";
+      }
     } catch (err) {
       assistantUi.error = String(err.message || err);
-      if (assistantUi.pack) assistantUi.result = assistantDeterministicAnswer(assistantUi.pack);
+      if (assistantUi.pack) {
+        assistantUi.result = assistantDeterministicAnswer(assistantUi.pack);
+        var fallbackActions = assistantGoalActions(question, assistantUi.pack, assistantUi.result);
+        if (fallbackActions.length) {
+          assistantUi.plan = agentPlan(fallbackActions);
+          assistantUi.planSource = 'Adjustments to achieve: "' + question + '"';
+        }
+      }
     } finally {
       assistantUi.running = false;
       render();
@@ -3034,6 +3326,10 @@
           ? ids.concat([r.id])
           : ids.filter(function (x) { return x !== r.id; });
         assistantUi.result = null;
+        assistantUi.plan = null;
+        assistantUi.planSource = "";
+        ui.agentPlan = null;
+        ui.agentSource = "";
         render();
       });
       pick.appendChild(box);
@@ -3068,12 +3364,23 @@
       selected.length ? selected.length + " project(s) selected" : "Whole portfolio"));
     if (selected.length) {
       foot.appendChild(mkBtn("Clear selection", "btn sm ghost", function () {
-        ui.assistantProjectIds = []; assistantUi.result = null; render();
+        ui.assistantProjectIds = [];
+        assistantUi.result = null;
+        assistantUi.plan = null;
+        assistantUi.planSource = "";
+        ui.agentPlan = null;
+        ui.agentSource = "";
+        render();
       }));
     }
     foot.appendChild(mkBtn("Select all", "btn sm ghost", function () {
       ui.assistantProjectIds = state.projects.map(function (p) { return p.id; });
-      assistantUi.result = null; render();
+      assistantUi.result = null;
+      assistantUi.plan = null;
+      assistantUi.planSource = "";
+      ui.agentPlan = null;
+      ui.agentSource = "";
+      render();
     }));
     host.appendChild(foot);
 
@@ -3099,12 +3406,14 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query: m.action + " " + (m.effect || ""),
-                                 dimension: (pack.dimensions || [])[0] || null, limit: 1 })
+                                 dimension: (pack.dimensions || [])[0] || null, limit: 3 })
         });
         if (!res.ok) continue;
         var data = await res.json();
         if (data.matches && data.matches.length) {
-          m.citations = [{ ok: true, clause: data.matches[0], backfilled: true }];
+          // Prefer the user's private procedures when available
+          var bestMatch = data.matches.find(function (match) { return match.userProcedure; }) || data.matches[0];
+          m.citations = [{ ok: true, clause: bestMatch, backfilled: true }];
         }
       } catch (err) { /* leave uncited; the card states that plainly */ }
     }
@@ -3116,8 +3425,12 @@
 
   function libraryLoad(force) {
     if (!serverSession.active) return;
-    if (libraryUi.loading || (libraryUi.docs && !force)) return;
-    if (force) libraryUi.docs = null;
+    if (force) {
+      libraryUi.loading = false;
+      libraryUi.docs = null;
+    } else if (libraryUi.loading || libraryUi.docs) {
+      return;
+    }
     libraryUi.loading = true;
     fetch("/api/guidelines")
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("Server returned " + r.status)); })
@@ -3126,8 +3439,7 @@
       .then(function () {
         libraryUi.loading = false;
         onboardingDocCount = (libraryUi.docs || []).filter(function (x) { return x.mine; }).length;
-        // Repaint wherever the panel is currently shown.
-        if (ui.view === "settings" || ui.view === "advisor" || ui.view === "dashboard") render();
+        render();
       });
   }
 
@@ -3518,28 +3830,43 @@
 
   /**
    * The act half of the old "Ask & Act" tab, kept on the same page: turn the
-   * findings behind this answer into validated actions through the existing
-   * plan → diff → approve pipeline. No second mutation route.
+   * findings and goals behind this answer into validated actions through the
+   * existing plan → diff → approve pipeline. Automatically refreshes with new
+   * actionable adjustments whenever a different question is asked.
    */
   function renderAssistantActions(root, pack) {
     if (!canEdit()) return;
     var panel = el("div", { class: "panel panel-pad mt" });
-    panel.appendChild(el("h3", null, "3 · Act on this"));
+    panel.appendChild(el("h2", null, "3 · Act on this"));
     panel.appendChild(el("p", { class: "muted" },
-      "Proposals are validated against the same governance a human drag hits — WIP limits, evidence gates, " +
-      "dependency gates — and you approve a diff before anything changes."));
-    var row = el("div", { class: "flex wrap", style: "gap:8px" });
-    row.appendChild(mkBtn("Propose fixes from these findings", "btn", function () {
-      // Only findings selected by the Ask question and project scope. The old
-      // path used every portfolio finding, so "Act on this" proposed unrelated
-      // work the user had not asked about.
-      var actions = agentActionsFromFindings(pack.findings || []);
-      if (!actions.length) { toast("Nothing to propose — no actionable findings.", "err"); return; }
-      ui.agentPlan = agentPlan(actions);
-      ui.agentSource = "Derived from the findings behind this answer";
-      render();
+      "Actionable adjustments to achieve your goal. Each action is validated against governance " +
+      "(WIP limits, dependency gates, evidence gates) — select which ones to implement and apply them in one step."));
+
+    var activePlan = assistantUi.plan || ui.agentPlan;
+    var activeSource = assistantUi.planSource || ui.agentSource;
+
+    if (activePlan && activePlan.length) {
+      var planPanel = el("div", { class: "panel mt mb" });
+      renderAgentPlanPreview(planPanel, activePlan, activeSource);
+      panel.appendChild(planPanel);
+    } else {
+      panel.appendChild(el("div", { class: "panel panel-pad empty mt mb" },
+        "No automated adjustments proposed for this question. You can type a direct command below."));
+    }
+
+    var row = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    row.appendChild(mkBtn("↻ Re-analyze & refresh adjustments", "btn sm ghost", function () {
+      if (assistantUi.question && assistantUi.pack) {
+        var actions = assistantGoalActions(assistantUi.question, assistantUi.pack, assistantUi.result);
+        if (actions.length) {
+          assistantUi.plan = agentPlan(actions);
+          assistantUi.planSource = 'Adjustments to achieve: "' + assistantUi.question + '"';
+        }
+        render();
+        toast("Refreshed adjustments for this question", "ok");
+      }
     }));
-    row.appendChild(mkBtn("Type a command instead", "btn ghost", function () {
+    row.appendChild(mkBtn("Type a custom command instead", "btn sm ghost", function () {
       ui.advisorShowCommand = !ui.advisorShowCommand; render();
     }));
     panel.appendChild(row);
@@ -3553,21 +3880,14 @@
         ui.advisorCommandText = this.value;
         var parsed = agentParseCommand(this.value);
         if (!parsed.matched) { toast("That phrasing was not recognized as a command.", "err"); return; }
-        ui.agentPlan = agentPlan(parsed.actions);
-        ui.agentSource = 'Command: "' + this.value + '"';
+        assistantUi.plan = agentPlan(parsed.actions);
+        assistantUi.planSource = 'Command: "' + this.value + '"';
         render();
       });
       panel.appendChild(cmd);
       panel.appendChild(el("p", { class: "hint" },
         "Commands are parsed deterministically — no AI service involved. " +
         "move · set estimate/progress/priority/due · log N hours on · assign X to Y at N% · push/pull by N days · rebalance WIP."));
-    }
-
-    // Same validated plan → diff → approve pipeline the agent console uses.
-    if (ui.agentPlan) {
-      var planPanel = el("div", { class: "panel mt" });
-      renderAgentPlanPreview(planPanel, ui.agentPlan, ui.agentSource);
-      panel.appendChild(planPanel);
     }
     root.appendChild(panel);
   }
@@ -4252,6 +4572,7 @@
       var selected = plan.filter(function (s) { return s.status !== "ok" || s.selected; });
       var res = agentApply(selected);
       toast(res.applied + " change(s) applied — undo with Ctrl+Z", "ok");
+      assistantUi.plan = null; assistantUi.planSource = "";
       ui.agentPlan = null; ui.agentSource = "";
       render();
     });
@@ -4266,7 +4587,11 @@
       renderAgentPlanPreview(host, plan, sourceLabel);
     });
     var discard = el("button", { class: "btn" }, "Discard");
-    discard.addEventListener("click", function () { ui.agentPlan = null; ui.agentSource = ""; render(); });
+    discard.addEventListener("click", function () {
+      assistantUi.plan = null; assistantUi.planSource = "";
+      ui.agentPlan = null; ui.agentSource = "";
+      render();
+    });
     refreshSelection();
     foot.appendChild(applyBtn); foot.appendChild(selectAll); foot.appendChild(selectNone); foot.appendChild(discard);
     foot.appendChild(el("span", { class: "hint" }, "Applies as a single undo step and is recorded in the audit trail as agent-attributed."));
@@ -7066,7 +7391,14 @@
     return status === "active" ? "ok" : status === "pending" ? "warn" : "danger";
   }
 
-  async function adminFetchUsers() {
+  async function adminFetchUsers(force) {
+    if (force) {
+      adminState.loading = false;
+      adminState.loaded = false;
+      adminState.workspacesLoaded = false;
+      adminState.requestsLoaded = false;
+    }
+    if (adminState.loading) return;
     adminState.loading = true;
     adminState.error = "";
     // Account creation/deletion also creates or removes workspaces. Refresh
@@ -7101,7 +7433,7 @@
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) { toast(data.error || "That change could not be applied.", "err"); return false; }
       toast(okMessage, "ok");
-      adminFetchUsers();
+      adminFetchUsers(true);
       return true;
     } catch (err) {
       toast("Could not reach the server: " + err.message, "err");
@@ -7301,7 +7633,7 @@
               if (d.error) { toast(d.error, "err"); return; }
               closeModal();
               toast("Account created for " + payload.email, "ok");
-              adminFetchUsers();
+              adminFetchUsers(true);
             })
             .catch(function (e) { toast(e.message, "err"); });
         } },
@@ -7321,7 +7653,7 @@
           .then(function (d) {
             if (d.error) { toast(d.error, "err"); return; }
             toast("Deleted " + d.email, "ok");
-            adminFetchUsers();
+            adminFetchUsers(true);
           })
           .catch(function (e) { toast(e.message, "err"); });
       });
