@@ -17,9 +17,19 @@ let jwksTeam = null;
  * down — which is exactly what happens with a single hard-coded tag.
  */
 export async function verifyAccessJWT(request, env) {
-  const token = request.headers.get('Cf-Access-Jwt-Assertion');
+  // When Access fronts this exact path it adds the assertion header. When the
+  // browser reached /app through Access and then calls a Worker-protected API,
+  // the same signed token arrives as the HttpOnly CF_Authorization cookie.
+  // Supporting both avoids maintaining duplicate Allow policies for /app and
+  // /api while preserving signature, issuer, and audience verification.
+  let token = request.headers.get('Cf-Access-Jwt-Assertion');
   if (!token) {
-    throw new Error('Missing Cf-Access-Jwt-Assertion header. You must reach this through Cloudflare Access.');
+    const cookie = request.headers.get('Cookie') || '';
+    const match = /(?:^|;\s*)CF_Authorization=([^;]+)/.exec(cookie);
+    if (match) token = decodeURIComponent(match[1]);
+  }
+  if (!token) {
+    throw new Error('Missing Cloudflare Access session. Sign in through /app first.');
   }
   if (!env.TEAM_DOMAIN || !env.ACCESS_AUD) {
     throw new Error('Server configuration error: TEAM_DOMAIN or ACCESS_AUD is not set.');

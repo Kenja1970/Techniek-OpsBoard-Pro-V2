@@ -1297,6 +1297,24 @@
   }
 
   function hideAuthGate() { var g = $("#authGate"); if (g) g.remove(); document.getElementById("app").style.visibility = "visible"; }
+
+  function renderServerSessionError() {
+    document.getElementById("app").style.visibility = "hidden";
+    var existing = $("#authGate"); if (existing) existing.remove();
+    var gate = el("div", { id: "authGate", class: "auth-gate" });
+    var card = el("div", { class: "auth-card" });
+    card.innerHTML =
+      "<h2>Could not open your account</h2>" +
+      "<p class='muted'>The application page loaded, but its secure API session was not accepted. " +
+      "Sign in again; if this continues, ask an administrator to check your account status.</p>" +
+      "<div class='warn-banner mb'>No local profile was opened and no project data was changed.</div>";
+    var retry = el("a", { class: "btn primary", href: "/cdn-cgi/access/logout?returnTo=" +
+      encodeURIComponent(location.origin + "/app") }, "Sign in again");
+    card.appendChild(retry);
+    gate.appendChild(card);
+    document.body.appendChild(gate);
+  }
+
   function renderAuthGate(prefillUserId) {
     document.getElementById("app").style.visibility = "hidden";
     var existing = $("#authGate"); if (existing) existing.remove();
@@ -9321,6 +9339,13 @@
     }
 
     if (!me || !me.authenticated) {
+      // /app is the server-backed product. Falling back to a browser-local
+      // "Local Admin" profile here made an API authorization failure look like
+      // a successful login while hiding every real admin function.
+      if (/^\/app\/?$/.test(location.pathname)) {
+        renderServerSessionError();
+        return;
+      }
       syncState.status = 'local';
       var localUser = currentUser();
       if (!localUser || needsUnlock(localUser)) { renderAuthGate(localUser && localUser.id); return; }
