@@ -173,16 +173,33 @@ export async function deleteUser(client, actor, targetId) {
   try {
     // Their private procedure library (chunks cascade from the document).
     await client.query("DELETE FROM guideline_docs WHERE owner_user_id = $1", [targetId]);
-    // Workspaces nobody else is a member of go with them; shared ones survive.
-    await client.query(
-      `DELETE FROM workspaces w
-        WHERE w.id IN (SELECT workspace_id FROM workspace_members WHERE user_id = $1)
+
+    // Decide which workspaces are solely theirs BEFORE removing membership.
+    // The old sequence deleted the workspace first, but workspace_members has a
+    // foreign key to it, so PostgreSQL correctly rejected every account delete.
+    const sole = await client.query(
+      `SELECT mine.workspace_id
+         FROM workspace_members mine
+        WHERE mine.user_id = $1
           AND NOT EXISTS (
-            SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> $1
+            SELECT 1 FROM workspace_members other
+             WHERE other.workspace_id = mine.workspace_id
+               AND other.user_id <> $1
           )`,
       [targetId]
     );
+    const soleWorkspaceIds = sole.rows.map((row) => row.workspace_id);
+
+    // Membership must go first to satisfy its workspace foreign key. Shared
+    // workspaces survive because they are not in soleWorkspaceIds.
     await client.query("DELETE FROM workspace_members WHERE user_id = $1", [targetId]);
+    if (soleWorkspaceIds.length) {
+      await client.query(
+        "DELETE FROM workspaces WHERE id = ANY($1::text[])",
+        [soleWorkspaceIds]
+      );
+    }
+
     await client.query("UPDATE workspaces SET updated_by = NULL WHERE updated_by = $1", [targetId]);
     await client.query("DELETE FROM users WHERE id = $1", [targetId]);
     // The audit entry deliberately outlives the account.
