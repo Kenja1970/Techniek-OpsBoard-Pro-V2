@@ -598,6 +598,11 @@
     [["Admin", true], ["Engineer / Contributor", true], ["Viewer", false]].forEach(function (pair) {
       check(pair[0] + (pair[1] ? " can configure workspace" : " cannot configure workspace"), Q.canConfigureWorkspaceFor(pair[0]) === pair[1]);
     });
+    [["Admin", true], ["Department Manager", false], ["Project Manager", false],
+     ["Resource Manager", false], ["Engineer / Contributor", false], ["Viewer", false]].forEach(function (pair) {
+      check(pair[0] + (pair[1] ? " can simulate roles" : " cannot simulate roles"),
+        Q.canChangeRoleFor(pair[0]) === pair[1]);
+    });
     [["Engineer / Contributor", false], ["Viewer", false]].forEach(function (pair) {
       check(pair[0] + " workspace tabs exclude Financials", Q.workspaceTabsFor(pair[0]).indexOf("Financials") === -1);
       check(pair[0] + " workspace tabs exclude FV/EAC", Q.workspaceTabsFor(pair[0]).indexOf("FV/EAC") === -1);

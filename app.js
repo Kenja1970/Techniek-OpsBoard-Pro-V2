@@ -816,12 +816,14 @@
   
   function load(userId) {
     var loaded = null;
+    var hadCachedWorkspace = false;
     // migrate() calls helpers (resourceById, etc.) that read the global `state`,
     // so point it at the incoming workspace for the duration of the migration.
     // Without this, migrating a saved workspace throws and the data is discarded.
     var prevState = state;
     try {
       var raw = localStorage.getItem(wsKey(userId)) || localStorage.getItem((userId ? LEGACY_STORAGE_KEY + "::" + userId : LEGACY_STORAGE_KEY));
+      hadCachedWorkspace = !!raw;
       if (raw) {
         var parsed = JSON.parse(raw);
         if (parsed && parsed.boards && parsed.cards) {
@@ -834,12 +836,19 @@
     } finally {
       state = prevState;
     }
-    if (!loaded) loaded = demoWorkspace();
+    // A signed-in user with no prior browser workspace is genuinely new; show
+    // the guided blank workspace immediately rather than flashing demo data
+    // while the server answers. Local-only and /try retain the sample portfolio.
+    if (!loaded) loaded = serverSession.active ? blankWorkspace() : demoWorkspace();
 
     // Hydrate from the server in the background; never block first paint.
     // Until that finishes, `loaded` may be a throwaway demo workspace, so saves
     // are suppressed — pushing it would race the real data back to the server.
-    if (serverSession.active) { syncState.hydrating = true; fetchFromServer(); }
+    if (serverSession.active) {
+      syncState.hadCachedBeforeLoad = hadCachedWorkspace;
+      syncState.hydrating = true;
+      fetchFromServer();
+    }
 
     return loaded;
   }
@@ -1103,13 +1112,11 @@
         render();
         syncState.hydrating = false;
       } else {
-        // Nothing stored for this account yet. A genuinely new user starts
-        // blank and is guided through setup rather than inheriting a demo
-        // portfolio. But if this browser already holds a workspace for them,
-        // that is real work — seed the account from it instead of wiping it.
-        var cached = null;
-        try { cached = localStorage.getItem(wsKey(accounts && accounts.currentUserId)); } catch (e) {}
-        if (!cached) state = blankWorkspace();
+        // Nothing stored for this account yet. Use the cache state captured
+        // before enterApp wrote anything: enterApp saves the first render to
+        // localStorage, so checking localStorage now mistakes our own demo seed
+        // for pre-existing user work and uploads it to every new account.
+        if (!syncState.hadCachedBeforeLoad) state = blankWorkspace();
         syncState.hydrating = false;
         render();
         pushToServer();
@@ -1493,6 +1500,13 @@
   function canGovernRegisters() { return canEdit() && REGISTER_GOVERN_ROLES.indexOf(role()) !== -1; }
   // Workspace/system configuration (WIP policy, role simulation, imports, scale tools).
   function canConfigureWorkspace() { return canEdit(); }
+  function canChangeSimulatedRole() {
+    // In the server-backed product the signed-in role is authorization data,
+    // not a preference. Project Managers may configure project policy, but only
+    // a server-confirmed Admin may simulate another role. Local/demo mode keeps
+    // the control available only while already acting as Admin.
+    return serverSession.active ? isServerAdmin() : role() === "Admin";
+  }
   function workspaceTabs() {
     var tabs = ["Summary", "WBS List", "Kanban", "Gantt", "Resources"];
     if (canFinance()) tabs.push("Financials");
@@ -4351,7 +4365,10 @@
     rs.innerHTML = ROLES.map(function (r) {
       return '<option value="' + esc(r) + '"' + (r === role() ? " selected" : "") + ">" + esc(r) + "</option>";
     }).join("");
-    rs.disabled = !canConfigureWorkspace();
+    rs.disabled = !canChangeSimulatedRole();
+    rs.title = rs.disabled
+      ? "Only an administrator can change the simulated role."
+      : "Simulate another role for review; this does not change server permissions.";
 
     document.documentElement.setAttribute("data-theme", state.settings.theme);
     $("#themeBtn").textContent = state.settings.theme === "dark" ? "☀" : "🌙";
@@ -7209,6 +7226,28 @@
     });
   }
 
+  function adminResetWorkspace(ws) {
+    confirmModal("Reset " + (ws.owner_name || ws.owner_email) + "'s workspace?",
+      "This permanently removes every project, work item, resource, register entry, and local setting in " +
+      "that account, then returns it to the six-step project setup checklist. The account and its private " +
+      "procedure library are kept. This cannot be undone.",
+      function () {
+        var fresh = blankWorkspace();
+        fetch("/api/admin/workspace?id=" + encodeURIComponent(ws.id), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: fresh, rev: Number(ws.rev) }),
+        }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+          .then(function (res) {
+            if (!res.ok) { toast(res.d.error || "Could not reset the workspace", "err"); return; }
+            adminState.workspacesLoaded = false;
+            toast("Workspace reset to guided setup", "ok");
+            render();
+          })
+          .catch(function (e) { toast(e.message, "err"); });
+      });
+  }
+
   function renderAdminWorkspacesPanel(root) {
     if (!adminState.workspacesLoaded && !adminState.workspacesLoading) {
       adminState.workspacesLoading = true;
@@ -7249,6 +7288,7 @@
         act.appendChild(el("span", { class: "chip sm ok" }, "yours"));
       } else {
         act.appendChild(mkBtn("Open workspace", "btn sm ghost", function () { adminOpenWorkspace(w); }));
+        act.appendChild(mkBtn("Reset to setup", "btn sm danger", function () { adminResetWorkspace(w); }));
       }
       tr.appendChild(act);
       tb.appendChild(tr);
@@ -7660,11 +7700,21 @@
     var roleRow = el("div", { class: "form-row mt" });
     roleRow.innerHTML = "<label class='field-label inline'>Simulated role</label>";
     var roleSel = el("select", { class: "select" }, ROLES.map(function (r) { return "<option" + (r === role() ? " selected" : "") + ">" + esc(r) + "</option>"; }).join(""));
-    if (!canConfigureWorkspace()) roleSel.setAttribute("disabled", "disabled");
-    roleSel.addEventListener("change", function () { if (!canConfigureWorkspace()) return; mutate(function () { state.settings.role = roleSel.value; }); });
+    if (!canChangeSimulatedRole()) roleSel.setAttribute("disabled", "disabled");
+    roleSel.addEventListener("change", function () {
+      if (!canChangeSimulatedRole()) {
+        toast("Only an administrator can change the simulated role", "err");
+        roleSel.value = role();
+        return;
+      }
+      mutate(function () { state.settings.role = roleSel.value; });
+    });
     roleRow.appendChild(roleSel);
     prefPanel.appendChild(roleRow);
-    if (!canConfigureWorkspace()) prefPanel.appendChild(el("div", { class: "hint" }, "Viewer role cannot change the simulated role or workspace policy settings."));
+    if (!canChangeSimulatedRole()) {
+      prefPanel.appendChild(el("div", { class: "hint" },
+        "Your role is assigned by an administrator. You may configure project policy, but cannot simulate another role."));
+    }
 
       var autoRow = el("div", { class: "form-row mt" });
       autoRow.innerHTML = "<label class='field-label inline'><input type='checkbox' id='autoKanbanCredit'" + (state.settings.autoProgressFromKanban ? " checked" : "") + (canConfigureWorkspace() ? "" : " disabled") + "> Auto-credit Kanban Stage progress when cards move between columns (Manual Physical % and Rules of Credit are never overwritten)</label>";
@@ -9301,7 +9351,11 @@
   function bindGlobal() {
     $("#boardSelect").addEventListener("change", function () { state.activeBoardId = this.value; ui.filterAssignee = ""; save(); render(); });
     $("#roleSelect").addEventListener("change", function () {
-      if (!canConfigureWorkspace()) { toast("Viewer role cannot change the simulated role", "err"); return; }
+      if (!canChangeSimulatedRole()) {
+        $("#roleSelect").value = role();
+        toast("Only an administrator can change the simulated role", "err");
+        return;
+      }
       mutate(function () { state.settings.role = $("#roleSelect").value; });
     });
     $("#themeBtn").addEventListener("click", function () { mutate(function () { state.settings.theme = state.settings.theme === "dark" ? "light" : "dark"; }); });
@@ -9578,6 +9632,7 @@
       canFinanceFor: function (r) { return FINANCIAL_ROLES.indexOf(r) !== -1; },
       canEditFor: function (r) { return READONLY_ROLES.indexOf(r) === -1; },
       canConfigureWorkspaceFor: function (r) { return READONLY_ROLES.indexOf(r) === -1; },
+      canChangeRoleFor: function (r) { return r === "Admin"; },
       workspaceTabsFor: function (r) {
         var tabs = ["Summary", "WBS List", "Kanban", "Gantt", "Resources"];
         if (FINANCIAL_ROLES.indexOf(r) !== -1) tabs.push("Financials");
