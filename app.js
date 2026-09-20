@@ -1315,6 +1315,30 @@
     document.body.appendChild(gate);
   }
 
+  function renderServerAccountStatus(me) {
+    document.getElementById("app").style.visibility = "hidden";
+    var existing = $("#authGate"); if (existing) existing.remove();
+    var gate = el("div", { id: "authGate", class: "auth-gate" });
+    var card = el("div", { class: "auth-card" });
+    var suspended = me.status === "suspended";
+    card.innerHTML =
+      "<h2>" + (suspended ? "Account suspended" : "Account awaiting approval") + "</h2>" +
+      "<p class='muted'>Signed in as <strong>" + esc(me.email) + "</strong>.</p>" +
+      "<p class='muted'>" +
+      (suspended
+        ? "An administrator has suspended this account. Contact the organization that invited you."
+        : "Your email is verified, but an administrator has not approved the account yet. " +
+          "You will be able to create a private workspace as soon as it is approved.") +
+      "</p>" +
+      "<div class='warn-banner mb'>No local profile was opened and no project data was changed.</div>";
+    card.appendChild(el("a", {
+      class: "btn",
+      href: "/cdn-cgi/access/logout?returnTo=" + encodeURIComponent(location.origin),
+    }, "Sign out"));
+    gate.appendChild(card);
+    document.body.appendChild(gate);
+  }
+
   function renderAuthGate(prefillUserId) {
     document.getElementById("app").style.visibility = "hidden";
     var existing = $("#authGate"); if (existing) existing.remove();
@@ -7042,8 +7066,8 @@
     panel.appendChild(el("h2", null, "Account requests" +
       (open.length ? " · " + open.length + " awaiting review" : "")));
     panel.appendChild(el("p", { class: "muted" },
-      "Submitted from the public request form. Recording a decision here does not create an account — " +
-      "invite the person separately once you are satisfied."));
+      "Submitted from the public request form. Approving creates an active Project Manager account. " +
+      "Cloudflare verifies the person's email with a one-time code when they sign in; OpsBoard stores no password."));
 
     var tbl = el("table", { class: "table mt" });
     tbl.innerHTML = "<thead><tr><th>Requester</th><th>Organization</th><th>Reason</th>" +
@@ -7063,9 +7087,26 @@
 
       var act = el("td");
       if (r.status === "new") {
-        act.appendChild(mkBtn("Mark invited", "btn sm primary", function () { decideRequest(r, "invited"); }));
+        act.appendChild(mkBtn("Approve account", "btn sm primary", function () {
+          confirmModal("Approve " + (r.name || r.email) + "?",
+            "This creates an active Project Manager account for " + r.email +
+            ". Cloudflare will verify control of that inbox when they sign in.",
+            function () { decideRequest(r, "invited"); });
+        }));
         act.appendChild(mkBtn("Decline", "btn sm ghost", function () { decideRequest(r, "declined"); }));
       } else {
+        if (r.status === "invited") {
+          var subject = encodeURIComponent("Your Techniek OpsBoard account is ready");
+          var body = encodeURIComponent(
+            "Your Techniek OpsBoard account has been approved.\n\n" +
+            "Sign in at https://opsboard.techniekengineering.com/app using " + r.email +
+            ". Cloudflare will email you a one-time verification code; there is no password to remember."
+          );
+          act.appendChild(el("a", {
+            class: "btn sm primary",
+            href: "mailto:" + encodeURIComponent(r.email) + "?subject=" + subject + "&body=" + body,
+          }, "Email sign-in link"));
+        }
         act.appendChild(mkBtn("Reopen", "btn sm ghost", function () { decideRequest(r, "new"); }));
       }
       tr.appendChild(act);
@@ -7227,7 +7268,12 @@
       .then(function (d) {
         if (d.error) { toast(d.error, "err"); return; }
         adminState.requestsLoaded = false;
-        toast("Request marked " + decision, "ok");
+        if (decision === "invited") {
+          adminState.loaded = false;
+          toast("Account approved for " + req.email, "ok");
+        } else {
+          toast("Request marked " + decision, "ok");
+        }
         render();
       })
       .catch(function (e) { toast("Could not reach the server: " + e.message, "err"); });
@@ -9375,6 +9421,15 @@
     markUnlocked(profile.id);
     saveAccounts();
 
+    // Authentication proves control of the inbox; application approval decides
+    // whether that identity may have project data. Pending and suspended users
+    // never fall into the browser-local demo workspace.
+    if (!serverSession.active) {
+      syncState.status = me.status === "suspended" ? "error" : "pending";
+      renderServerAccountStatus(me);
+      return;
+    }
+
     enterApp(profile.id);
 
     // Surface the pending-approval count on the nav badge without making the
@@ -9393,13 +9448,6 @@
         .catch(function () { /* checklist simply shows the step as pending */ });
     }
 
-    if (!serverSession.active) {
-      syncState.status = 'pending';
-      renderSyncIndicator();
-      toast(me.status === "suspended"
-        ? "This account is suspended. Changes stay in this browser."
-        : "Account pending administrator approval. Changes stay in this browser.", "err");
-    }
   }
 
   // Small public API for programmatic integration and testing (no DOM side effects).

@@ -239,26 +239,84 @@ export async function listAccessRequests(client) {
 }
 
 /**
- * Deciding a request records the decision only. It deliberately does not create
- * a user or touch the Access policy: an invite is a separate, explicit act, so
- * a mis-click here cannot grant anybody access.
+ * Approving a request creates (or activates) the application account.
+ *
+ * Cloudflare Access still authenticates the email address, so this does not
+ * create a password and cannot let someone impersonate the requester. It only
+ * says that once Access proves control of that inbox, this application should
+ * open a private workspace rather than the pending screen.
  */
 export async function decideAccessRequest(client, actor, requestId, decision, notes) {
   if (["invited", "declined", "new"].indexOf(decision) === -1) {
     return { error: "Unknown decision '" + decision + "'.", code: 400 };
   }
-  const found = await client.query("SELECT id, email, status FROM access_requests WHERE id = $1", [requestId]);
-  if (!found.rows.length) return { error: "Request not found.", code: 404 };
-
-  const updated = await client.query(
-    `UPDATE access_requests
-        SET status = $1, decided_by = $2, decided_at = NOW(), notes = COALESCE($3, notes)
-      WHERE id = $4
-      RETURNING id, email, name, company, reason, status, country, created_at, decided_at, decided_by`,
-    [decision, actor.id, notes || null, requestId]
+  const found = await client.query(
+    "SELECT id, email, name, status FROM access_requests WHERE id = $1",
+    [requestId]
   );
-  await audit(client, actor.id, "access_request." + decision, requestId, { email: found.rows[0].email });
-  return { request: updated.rows[0] };
+  if (!found.rows.length) return { error: "Request not found.", code: 404 };
+  const requestRow = found.rows[0];
+
+  await client.query("BEGIN");
+  try {
+    let account = null;
+    if (decision === "invited") {
+      const existing = await client.query(
+        "SELECT id, email, display_name, status, global_role FROM users WHERE email = $1",
+        [requestRow.email]
+      );
+      if (existing.rows.length) {
+        // Preserve the role an administrator may already have assigned; only
+        // activate the account.
+        const active = await client.query(
+          `UPDATE users SET status = 'active'
+            WHERE id = $1
+            RETURNING id, email, display_name, status, global_role`,
+          [existing.rows[0].id]
+        );
+        account = active.rows[0];
+      } else {
+        const created = await client.query(
+          `INSERT INTO users
+             (id, email, display_name, status, global_role, org_id)
+           VALUES ($1,$2,$3,'active','Project Manager',$4)
+           RETURNING id, email, display_name, status, global_role`,
+          [
+            newId("u"),
+            requestRow.email,
+            requestRow.name || requestRow.email.split("@")[0],
+            actor.org_id || null,
+          ]
+        );
+        account = created.rows[0];
+      }
+      await audit(client, actor.id, "user.approved_from_request", account.id, {
+        email: account.email,
+        requestId,
+      });
+    }
+
+    const updated = await client.query(
+      `UPDATE access_requests
+          SET status = $1, decided_by = $2, decided_at = NOW(),
+              notes = COALESCE($3, notes)
+        WHERE id = $4
+        RETURNING id, email, name, company, reason, status, country,
+                  created_at, decided_at, decided_by`,
+      [decision, actor.id, notes || null, requestId]
+    );
+    await audit(client, actor.id, "access_request." + decision, requestId, {
+      email: requestRow.email,
+    });
+    await client.query("COMMIT");
+    return { request: updated.rows[0], account };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    return {
+      error: "Could not process the request: " + (error && error.message),
+      code: 500,
+    };
+  }
 }
 
 export async function recentAudit(client, limit) {

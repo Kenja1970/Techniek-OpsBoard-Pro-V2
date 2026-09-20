@@ -158,7 +158,7 @@ async function handleApi(request, env, ctx, url) {
         const body = await request.json().catch(() => ({}));
         const result = await decideAccessRequest(client, user, body.id, body.decision, body.notes);
         if (result.error) return json({ error: result.error }, result.code || 400);
-        return json({ ok: true, request: result.request });
+        return json({ ok: true, request: result.request, account: result.account || null });
       }
 
       // /api/admin/users/<id>/status | /api/admin/users/<id>/role
