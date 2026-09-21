@@ -2,7 +2,21 @@
 
 Two related capabilities on one screen. The **Advisor** inspects; the **Agent** acts. Both are deterministic and work with no AI service running.
 
-**PM Advisor → Findings | Ask & Act | Procedure Q&A**
+**PM Advisor → Choose scope · Ask · Act on this**
+
+Ask answers are bounded by two sources of truth and nothing else:
+
+1. **Selected-project evidence** — metrics, findings, and named work items the
+   application already computed for the ticked project(s), or the whole
+   portfolio if none are selected.
+2. **The user's procedure library** — clauses retrieved from private uploads
+   (and any org-published documents). Private uploads outrank the shared
+   baseline. If nothing covers the condition, the card says so.
+
+The language model arranges that pack; it does not compute numbers and it
+does not name a procedure that was not retrieved. Each recommendation ends
+with a compact location link (`PMBOK Guide · p. 184`). Click it to read the
+passage.
 
 ---
 

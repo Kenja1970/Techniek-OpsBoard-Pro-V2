@@ -182,10 +182,10 @@ async function handleApi(request, env, ctx, url) {
     // Reading is open to any approved user; publishing a controlled procedure
     // is an administrator act.
     if (url.pathname === '/api/guidelines') {
-      const orgId = user.org_id || 'org_techniek';
+      const orgId = 'org_techniek';
 
       if (request.method === 'GET') {
-        return json({ documents: await listDocuments(client, user.id) });
+        return json({ documents: await listDocuments(client, user.id, orgId) });
       }
 
       if (request.method === 'DELETE') {
@@ -257,6 +257,7 @@ async function handleApi(request, env, ctx, url) {
       const body = await request.json().catch(() => ({}));
       const result = await searchGuidelines(client, env, {
         userId: user.id,
+        orgId: 'org_techniek',
         query: body.query,
         dimension: body.dimension,
         limit: body.limit,

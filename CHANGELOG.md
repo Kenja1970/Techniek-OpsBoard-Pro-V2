@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [6.0.1] — 2026-09-21
+
+### Changed
+- **PM Advisor Ask is bounded by two sources of truth**, not the model's general knowledge: the live metrics, findings, and work items of the selected project (or portfolio), plus clauses retrieved from the user's own uploaded procedures. The LLM is instructed to stay inside that pack; invented procedure ids are dropped before render (heuristics 4, 5, 9).
+- Retrieval now searches the **question itself** as well as each finding, so the governing clause is the one that answers the Ask, not only the one bound to whatever finding ranked first. Private uploads still outrank org-wide documents.
+- Procedure citations are **minute RAG location links** at the end of each recommendation — `PMBOK Guide · p. 184`, `Cost SOP · § CPI thresholds` — instead of a 700-character blockquote. Click or Enter expands the passage (heuristics 1, 6, 8). A de-duplicated **Sources** row closes the answer.
+
 ## [5.2.1] — 2026-07-29
 
 ### Fixed

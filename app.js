@@ -18,7 +18,7 @@
   var PRODUCT_NAME = "Techniek OpsBoard Pro V2";
   var PRODUCT_SHORT = "OpsBoard V2";
   var SCHEMA_VERSION = "6.0.0";
-  var APP_VERSION = "6.0.0";
+  var APP_VERSION = "6.0.1";
   // Kanban WIP policy: "hard" blocks pulls that would exceed a stage limit (Anderson / LeanKanban).
   // "soft" warns only (legacy demo behavior). Production default is hard.
   var WIP_POLICIES = ["hard", "soft"];
@@ -1104,7 +1104,7 @@
       var data = await res.json();
       syncState.serverRev = data.rev || 0;
 
-      if (data.state) {
+      if (data.state && data.state.boards && data.state.cards) {
         // The server copy wins on load; the local cache is just a fast start.
         state = migrate(data.state);
         state.rev = data.rev;
@@ -1116,7 +1116,9 @@
         // before enterApp wrote anything: enterApp saves the first render to
         // localStorage, so checking localStorage now mistakes our own demo seed
         // for pre-existing user work and uploads it to every new account.
-        if (!syncState.hadCachedBeforeLoad) state = blankWorkspace();
+        if (!syncState.hadCachedBeforeLoad) {
+          state = (serverSession.role === "Admin") ? demoWorkspace() : blankWorkspace();
+        }
         syncState.hydrating = false;
         render();
         pushToServer();
@@ -2774,14 +2776,31 @@
     };
   }
 
+  async function assistantSearchGuidelines(query, dimension, limit) {
+    var res = await fetch("/api/guidelines/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: query, dimension: dimension || null, limit: limit || 3 })
+    });
+    if (!res.ok) throw new Error("search returned " + res.status);
+    var data = await res.json();
+    return data.matches || [];
+  }
+
   /**
-   * Attach the governing clause to each finding.
+   * Attach governing clauses from the user's procedure library.
    *
-   * The query is the finding itself — its title carries the condition and its
-   * evidence carries the numbers — filtered to that finding's dimension, which
-   * is load-bearing: unfiltered semantic search confuses the "Recommended
-   * response" section that every procedure has. A finding with no match is
-   * reported as a genuine gap rather than padded with the nearest paragraph.
+   * Two retrievals, then fused:
+   *   1. The Ask itself — so the answer is bounded by the procedures that
+   *      actually speak to the question, not only to whatever finding ranked
+   *      first.
+   *   2. Each finding — title + evidence, filtered to that finding's dimension,
+   *      which is load-bearing: unfiltered semantic search confuses the
+   *      "Recommended response" section that every procedure has.
+   *
+   * A condition with no match is reported as a genuine gap rather than padded
+   * with the nearest paragraph. The user's private uploads outrank org-wide
+   * documents (the search endpoint already sorts that way).
    */
   async function assistantGroundPack(pack) {
     if (!serverSession.active) {
@@ -2791,28 +2810,35 @@
     }
     var out = [];
     var gaps = [];
-    for (var i = 0; i < pack.findings.length; i++) {
-      var f = pack.findings[i];
-      try {
-        var res = await fetch("/api/guidelines/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: f.title + " " + f.evidence, dimension: f.dimension, limit: 2 })
-        });
-        if (!res.ok) throw new Error("search returned " + res.status);
-        var data = await res.json();
-        if (data.matches && data.matches.length) {
-          out.push({ findingId: f.id, matches: data.matches });
-        } else {
-          gaps.push({ findingId: f.id, dimension: f.dimension, title: f.title });
-        }
-      } catch (err) {
-        pack.retrieval = { available: false, reason: String(err.message || err) };
-        return pack;
+    var seen = {};
+
+    function takeMatches(matches) {
+      var unique = [];
+      (matches || []).forEach(function (m) {
+        if (!m || !m.chunkId || seen[m.chunkId]) return;
+        seen[m.chunkId] = true;
+        unique.push(m);
+      });
+      return unique;
+    }
+
+    try {
+      // Question-level retrieval is unfiltered by dimension so uploaded PDFs
+      // (which commonly have none) can still govern the Ask.
+      var qMatches = takeMatches(await assistantSearchGuidelines(pack.question, null, 4));
+      if (qMatches.length) out.push({ findingId: "__question__", matches: qMatches });
+
+      for (var i = 0; i < pack.findings.length; i++) {
+        var f = pack.findings[i];
+        var matches = takeMatches(await assistantSearchGuidelines(f.title + " " + f.evidence, f.dimension, 2));
+        if (matches.length) out.push({ findingId: f.id, matches: matches });
+        else gaps.push({ findingId: f.id, dimension: f.dimension, title: f.title });
       }
+    } catch (err) {
+      pack.retrieval = { available: false, reason: String(err.message || err) };
+      return pack;
     }
     pack.clauses = out;
-    // Conditions your procedures do not cover are the useful half of the answer.
     pack.gaps = gaps;
     pack.retrieval = { available: true, grounded: out.length, ungrounded: gaps.length };
     return pack;
@@ -2924,7 +2950,11 @@
     var crit = pack.findings.filter(function (f) { return f.severity === "critical"; });
     var lead = crit[0] || pack.findings[0];
     var clauseFor = {};
-    (pack.clauses || []).forEach(function (g) { clauseFor[g.findingId] = g.matches[0]; });
+    var questionMatches = [];
+    (pack.clauses || []).forEach(function (g) {
+      if (g.findingId === "__question__") questionMatches = g.matches || [];
+      else if (g.matches && g.matches[0]) clauseFor[g.findingId] = g.matches[0];
+    });
 
     return {
       headline: lead
@@ -2932,7 +2962,7 @@
         : "No findings in " + pack.dimensions.join(", ") + " for this scope.",
       situation: lead ? lead.evidence : "The deterministic inspection found nothing in these dimensions.",
       moves: pack.findings.slice(0, 4).map(function (f) {
-        var m = clauseFor[f.id];
+        var m = clauseFor[f.id] || questionMatches[0];
         return {
           action: f.action || f.title,
           effect: f.evidence,
@@ -3391,6 +3421,72 @@
   }
 
   /**
+   * Compact RAG location for a retrieved clause.
+   * PDF ingest stores headings as "p. 12"; markdown sections get a section mark.
+   * Heuristic 6: show the document and place, not an opaque id the user must recall.
+   */
+  function assistantCiteLocation(cl) {
+    var heading = String((cl && cl.heading) || "").trim();
+    if (!heading) return "";
+    if (/^p\.\s*\d+/i.test(heading) || heading.charAt(0) === "§") return heading;
+    return "§ " + heading;
+  }
+
+  function assistantCiteLabel(cl) {
+    if (!cl) return "Procedure";
+    var parts = [cl.title || "Procedure"];
+    var loc = assistantCiteLocation(cl);
+    if (loc) parts.push(loc);
+    if (cl.revision && cl.revision !== "—") parts.push("rev " + cl.revision);
+    return parts.join(" · ");
+  }
+
+  function assistantUniqueCitations(result) {
+    var seen = {};
+    var out = [];
+    (result && result.moves || []).forEach(function (m) {
+      (m.citations || []).forEach(function (c) {
+        if (!c || !c.ok || !c.clause) return;
+        var id = c.clause.chunkId || c.clause.docId || assistantCiteLabel(c.clause);
+        if (seen[id]) return;
+        seen[id] = true;
+        out.push(c);
+      });
+    });
+    return out;
+  }
+
+  /**
+   * Minute RAG citations: a small location link at the end of the answer.
+   * The passage is one click/Enter away (heuristic 8: show only what's needed;
+   * heuristic 1: the source is visible without hover).
+   */
+  function assistantRenderCiteLinks(host, citations, opts) {
+    opts = opts || {};
+    var ok = (citations || []).filter(function (c) { return c && c.ok && c.clause; });
+    if (!ok.length) {
+      if (!opts.optional) {
+        host.appendChild(el("p", { class: "hint mt" },
+          "No procedure in your library covers this step — consider adding one."));
+      }
+      return;
+    }
+    var row = el("div", { class: "cite-row" + (opts.end ? " cite-row-end mt" : " mt") });
+    if (opts.label) row.appendChild(el("span", { class: "cite-label" }, esc(opts.label)));
+    ok.forEach(function (c) {
+      var cl = c.clause;
+      var det = el("details", { class: "cite-rag" });
+      det.appendChild(el("summary", { class: "cite-link" }, esc(assistantCiteLabel(cl))));
+      var body = el("blockquote", { class: "cite-passage" });
+      if (cl.passage) body.appendChild(el("p", null, esc(String(cl.passage).slice(0, 700))));
+      if (cl.source) body.appendChild(el("div", { class: "faint" }, esc(cl.source)));
+      det.appendChild(body);
+      row.appendChild(det);
+    });
+    host.appendChild(row);
+  }
+
+  /**
    * A suggestion with no citation is just an opinion. When the model cites
    * nothing for a move, search the user's library with the move's own text and
    * attach the governing clause. If the library genuinely has nothing, the card
@@ -3659,9 +3755,10 @@
     var panel = el("div", { class: "panel panel-pad mt" });
     panel.appendChild(el("h2", null, "2 · Ask — " + esc(scopeName)));
     panel.appendChild(el("p", { class: "muted" },
-      "Plain language. Answers are built from the metrics and findings this application computed for " +
-      esc(scopeName) + ", paired with clauses from your own procedure library — every figure is checked against " +
-      "that evidence before it is shown."));
+      "Plain language. Answers are bounded by two sources: the live metrics, findings, and work items " +
+      "for " + esc(scopeName) + ", and the procedures you uploaded (plus any org-published ones). " +
+      "Every figure is checked against that evidence; each recommendation ends with a small link to the " +
+      "governing clause — document, section, or page."));
 
     var input = el("input", { class: "input", id: "assistantQ",
       placeholder: "e.g. How can I improve schedule?  ·  How can I make my project more profitable?" });
@@ -3719,24 +3816,11 @@
         card.appendChild(el("span", { class: "chip sm" }, esc(l.label)));
       });
 
-      var shown = (m.citations || []).filter(function (c) { return c.ok; });
-      shown.forEach(function (c) {
-        var cl = c.clause;
-        var cite = el("blockquote", { class: "mt" });
-        cite.appendChild(el("div", { class: "faint" },
-          esc(cl.title) + (cl.revision && cl.revision !== "—" ? " (rev " + esc(cl.revision) + ")" : "") +
-          " — " + esc(cl.heading || "")));
-        cite.appendChild(el("p", null, esc(cl.passage.slice(0, 700))));
-        card.appendChild(cite);
-      });
-      // Every suggestion is either backed by a clause from this user's library
-      // or says plainly that nothing in the library covers it.
-      if (!shown.length) {
-        card.appendChild(el("p", { class: "hint mt" },
-          "No procedure in your library covers this step — consider adding one."));
-      }
+      assistantRenderCiteLinks(card, m.citations);
       out.appendChild(card);
     });
+
+    assistantRenderCiteLinks(out, assistantUniqueCitations(a), { end: true, label: "Sources", optional: true });
 
     if ((a.avoid || []).length) {
       var av = el("div", { class: "panel panel-pad mt" });
@@ -10121,6 +10205,9 @@
       assistantRouteDimensions: assistantRouteDimensions,
       assistantEvidencePack: assistantEvidencePack,
       assistantGroundPack: assistantGroundPack,
+      assistantValidate: assistantValidate,
+      assistantCiteLabel: assistantCiteLabel,
+      assistantCiteLocation: assistantCiteLocation,
       advisorHealth: function () { return advisorHealth(); },
       agentParseCommand: agentParseCommand,
       agentPlan: agentPlan,

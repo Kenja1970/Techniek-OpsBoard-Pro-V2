@@ -880,6 +880,35 @@
       var F2 = Q.advisorFindings();
       check("relieving the WIP breach clears the finding", F2.filter(function (f) { return /WIP/.test(f.title); }).length < wipBefore, "was " + wipBefore);
       check("health improves when findings clear", Q.advisorHealth().overall.score >= H.overall.score, "now " + Q.advisorHealth().overall.score + " was " + H.overall.score);
+
+      // Ask answers are bounded by the selected project's live data.
+      var scopedProject = Q.state().projects[0];
+      check("demo project exists for evidence-pack scope", !!scopedProject);
+      if (scopedProject) {
+        var pack = Q.assistantEvidencePack("How can I improve schedule?", { projectIds: [scopedProject.id] });
+        check("evidence pack names the selected project", pack.scope.name === scopedProject.name, pack.scope.name);
+        check("evidence pack metrics are project-scoped, not portfolio", pack.metrics.scope === "project" || pack.metrics.scope === "projects");
+        check("lever cards belong to the selected project", (pack.levers.cards || []).every(function (c) {
+          return !c.projectId || c.projectId === scopedProject.id;
+        }));
+        check("findings in the pack are in the selected scope", (pack.findings || []).every(function (f) {
+          var pid = (f.drill || {}).projectId;
+          return !pid || pid === scopedProject.id;
+        }));
+        var whole = Q.assistantEvidencePack("How can I improve schedule?", { projectIds: [] });
+        check("empty selection is the whole portfolio", whole.scope.name === "Whole portfolio");
+      }
+
+      check("PDF heading becomes a page location", Q.assistantCiteLabel({ title: "PMBOK Guide", heading: "p. 184" }) === "PMBOK Guide · p. 184");
+      check("markdown heading becomes a section location", Q.assistantCiteLabel({ title: "Cost SOP", heading: "CPI thresholds", revision: "C" }) === "Cost SOP · § CPI thresholds · rev C");
+      var dropped = Q.assistantValidate({
+        headline: "Address the schedule condition first.",
+        situation: "The inspection found slip in this scope.",
+        moves: [{ action: "Crash the critical path", effect: "Recover the finish", tradeoff: "", clauseIds: ["no-such-clause"], leverIds: [] }],
+        avoid: [], gaps: []
+      }, Q.assistantEvidencePack("How can I improve schedule?", { projectIds: [] }));
+      check("invented procedure ids are dropped, not shown as citations",
+        dropped.droppedCitations >= 1 && dropped.moves[0].citations.every(function (c) { return !c.ok; }));
     })();
 
     /* ---- 16. PM Agent: command + recommendation execution ---- */

@@ -77,10 +77,10 @@ export async function resolveWorkspaceId(client, user, schemaVersion) {
   const member = await client.query(
     `SELECT w.id FROM workspaces w
       JOIN workspace_members m ON m.workspace_id = w.id
-     WHERE m.user_id = $1
+     WHERE m.user_id = $1 AND w.org_id = $2
      ORDER BY w.updated_at ASC
      LIMIT 1`,
-    [user.id]
+    [user.id, DEFAULT_ORG_ID]
   );
   if (member.rows.length) return member.rows[0].id;
 
@@ -88,7 +88,7 @@ export async function resolveWorkspaceId(client, user, schemaVersion) {
   await client.query(
     `INSERT INTO workspaces (id, org_id, state, rev, schema_version, updated_by)
      VALUES ($1, $2, $3::jsonb, 0, $4, $5)`,
-    [workspaceId, DEFAULT_ORG_ID, JSON.stringify(null), schemaVersion || "6.0.0", user.id]
+    [workspaceId, DEFAULT_ORG_ID, "{}", schemaVersion || "6.0.0", user.id]
   );
   await client.query(
     "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)",

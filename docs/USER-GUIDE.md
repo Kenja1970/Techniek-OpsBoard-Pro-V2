@@ -31,23 +31,27 @@ important alerts. Financial tiles appear only for finance-enabled roles.
 ### Project Workspace
 ## PM Advisor
 
-Three tabs, and the place to start each morning.
+One page: pick the scope, ask a question, act on the answer.
 
-- **Findings** — a graded health card per dimension (Cost · Schedule · Margin ·
-  Flow · Risk · Resource · Governance) and a ranked list of what is wrong, each
-  with the actual numbers, the recommended move, an **Open** button that jumps
-  straight to the offending card/project/resource, and an expandable **Playbook**
-  citing the procedure that covers it.
-- **Ask & Act** — type a change (`move Sensor harness routing to Review`,
-  `set estimate of X to 12`, `assign Diego Romero to Y at 40%`,
-  `push Z by 5 days`, `rebalance WIP`) or press **Propose fixes from findings**.
-  You get a diff to review before anything happens; blocked actions show the
-  governance reason and cannot be applied. Applying is one undo step.
-- **Procedure Q&A** — search the local PM knowledge base. Results are cited
-  passages from real documents, never generated text. Add your own `.md`
-  procedures here, or commit them under `knowledge/`.
+- **Choose the scope** — tick one project, several, or none for the whole
+  portfolio. CPI, SPI, margin, peak load, and open findings sit on the row so
+  you can see which project is worth asking about.
+- **Ask** — plain language (`How can I improve schedule?`). The answer is
+  bounded by two sources: the live metrics and findings for the selected
+  project, and the procedures you uploaded. Every figure is checked against
+  that evidence. Each recommendation ends with a small link to the governing
+  clause (document · section or page); click it to read the passage.
+- **Act on this** — validated board adjustments for the same question. Tick
+  the ones to apply; WIP limits, dependency gates, and evidence gates still
+  block illegal moves.
 
-None of this needs an API key or a network connection.
+Upload your own `.md` or `.pdf` procedures from **Settings**. They stay
+private to your account. The Assistant cites them in preference to any
+org-published baseline.
+
+The inspection still runs with no API key. A configured language model
+arranges the same evidence into an argument; it cannot invent numbers or
+procedure names that were not retrieved.
 
 ## Project Workspace
 

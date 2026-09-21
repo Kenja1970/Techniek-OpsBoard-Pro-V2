@@ -215,16 +215,16 @@ export async function deleteDocument(client, userId, rawId) {
 }
 
 /** A user sees their own procedures, plus anything deliberately published org-wide. */
-export async function listDocuments(client, userId) {
+export async function listDocuments(client, userId, orgId = 'org_techniek') {
   const res = await client.query(
     `SELECT d.id, d.title, d.source, d.revision, d.effective_date, d.status,
             d.dimension, d.triggers, d.tags, d.origin, d.visibility, d.created_at,
             (d.owner_user_id = $1) AS mine,
             (SELECT COUNT(*)::int FROM guideline_chunks c WHERE c.doc_id = d.id) AS chunks
        FROM guideline_docs d
-      WHERE d.owner_user_id = $1 OR d.visibility = 'org'
+      WHERE ((d.owner_user_id = $1 AND d.org_id = $2) OR (d.visibility = 'org' AND d.org_id = $2))
       ORDER BY d.status ASC, d.title ASC`,
-    [userId]
+    [userId, orgId]
   );
   return res.rows.map((r) => Object.assign({}, r, { id: publicId(r.id) }));
 }
@@ -240,6 +240,7 @@ export async function searchGuidelines(client, env, opts) {
 
   const limit = Math.min(Number(opts.limit) || 5, 20);
   const dimension = DIMENSIONS.indexOf(opts.dimension) !== -1 ? opts.dimension : null;
+  const orgId = opts.orgId || 'org_techniek';
   const vector = toVectorLiteral(await embedOne(env, query));
 
   const res = await client.query(
@@ -251,43 +252,43 @@ export async function searchGuidelines(client, env, opts) {
          JOIN guideline_docs d ON d.id = c.doc_id
         -- Retrieval never crosses an account boundary: a user's procedures are
         -- theirs alone unless explicitly published to the whole organization.
-        WHERE (d.owner_user_id = $1 OR d.visibility = 'org')
+        WHERE ((d.owner_user_id = $1 AND d.org_id = $2) OR (d.visibility = 'org' AND d.org_id = $2))
           AND d.status = 'active'
           -- Uploaded PDFs commonly have no frontmatter/dimension. Keep them in
           -- a dimension-scoped search as fallback; otherwise the user's own
           -- procedures can never be cited by the Assistant.
-          AND ($4::text IS NULL OR d.dimension = $4::text
+          AND ($5::text IS NULL OR d.dimension = $5::text
                OR d.dimension IS NULL OR d.dimension = '')
      ),
      lex AS (
-       SELECT id, ts_rank(search_vector, plainto_tsquery('english', $2)) AS score,
-              ROW_NUMBER() OVER (ORDER BY ts_rank(search_vector, plainto_tsquery('english', $2)) DESC) AS rank
+       SELECT id, ts_rank(search_vector, plainto_tsquery('english', $3)) AS score,
+              ROW_NUMBER() OVER (ORDER BY ts_rank(search_vector, plainto_tsquery('english', $3)) DESC) AS rank
          FROM scoped
-        WHERE search_vector @@ plainto_tsquery('english', $2)
+        WHERE search_vector @@ plainto_tsquery('english', $3)
         LIMIT 30
      ),
      vec AS (
-       SELECT id, 1 - (embedding <=> $3::vector) AS score,
-              ROW_NUMBER() OVER (ORDER BY embedding <=> $3::vector ASC) AS rank
+       SELECT id, 1 - (embedding <=> $4::vector) AS score,
+              ROW_NUMBER() OVER (ORDER BY embedding <=> $4::vector ASC) AS rank
          FROM scoped
         WHERE embedding IS NOT NULL
-        ORDER BY embedding <=> $3::vector ASC
+        ORDER BY embedding <=> $4::vector ASC
         LIMIT 30
      )
      SELECT s.id, s.doc_id, s.heading, s.content, s.title, s.source, s.revision,
-            s.dimension, s.triggers, s.origin, s.owner_user_id, s.visibility,
+            s.dimension, s.triggers, s.origin,
             COALESCE(lex.score, 0) AS lexical_score,
             COALESCE(vec.score, 0) AS cosine,
-            (CASE WHEN lex.rank IS NULL THEN 0 ELSE 1.0 / ($5 + lex.rank) END) +
-            (CASE WHEN vec.rank IS NULL THEN 0 ELSE 1.0 / ($5 + vec.rank) END) AS rrf,
+            (CASE WHEN lex.rank IS NULL THEN 0 ELSE 1.0 / ($6 + lex.rank) END) +
+            (CASE WHEN vec.rank IS NULL THEN 0 ELSE 1.0 / ($6 + vec.rank) END) AS rrf,
             (lex.id IS NOT NULL) AS lexical_hit
        FROM scoped s
        LEFT JOIN lex ON lex.id = s.id
        LEFT JOIN vec ON vec.id = s.id
       WHERE lex.id IS NOT NULL OR vec.id IS NOT NULL
       ORDER BY rrf DESC
-      LIMIT $6`,
-    [opts.userId, query, vector, dimension, RRF_K, limit * 3]
+      LIMIT $7`,
+    [opts.userId, orgId, query, vector, dimension, RRF_K, limit * 3]
   );
 
   const needle = query.toLowerCase();

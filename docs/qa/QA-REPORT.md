@@ -1,8 +1,14 @@
 # QA / QC Report — Techniek OpsBoard Pro V2
 
-**Version:** 5.2.0 · **Schema:** 5.0.0 · **Date:** 2026-07-27
-**Result:** ✅ **523 / 523 checks passed · 0 failures · 33 groups**
-**Run:** browser harness at `tests/qa.html`, verified live with zero console errors.
+**Version:** 6.0.1 · **Schema:** 6.0.0 · **Date:** 2026-09-21
+**Result:** ✅ **538 / 538 checks passed · 0 failures**
+**Run:** `node scripts/run-qa.mjs` (Playwright against `tests/qa.html`).
+
+Added in 6.0.1: evidence-pack project scoping, compact citation labels (`PMBOK Guide · p. 184`), and a check that invented procedure ids are dropped.
+
+---
+
+**Prior:** 5.2.0 · Schema 5.0.0 · 2026-07-27 · 523 / 523. Historical notes below.
 
 ## Method
 
