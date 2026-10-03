@@ -1,5 +1,8 @@
 {
   "scripts": {
+    "test": "node -c app.js && node -c tests/qa.js && node tests/unit-domain.mjs && node scripts/run-qa.mjs",
+    "verify": "npm run test && npm run sync",
+    "build": "npm run sync",
     "sync": "node scripts/sync-public.mjs",
     "predev": "node scripts/sync-public.mjs",
     "dev": "node scripts/dev.mjs",

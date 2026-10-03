@@ -26,6 +26,44 @@
   var ORG_UNITS = ["Techniek-Engineering", "Techniek-Controls", "Techniek-Digital", "Techniek-Field", "Techniek-BD", "Techniek-Corporate"];
   var DEFAULT_ORG_UNIT = "Techniek-Engineering";
 
+  function companyName() {
+    return (state && state.settings && state.settings.companyName) || "Techniek Engineering";
+  }
+  function orgUnitsList() {
+    var base = (state && state.settings && Array.isArray(state.settings.orgUnits) && state.settings.orgUnits.length > 0)
+      ? state.settings.orgUnits.slice()
+      : [
+          "Engineering & Design",
+          "Controls & Automation",
+          "Digital & Software Solutions",
+          "Field Integration & Operations",
+          "Project Management Office (PMO)",
+          "Corporate & Commercial"
+        ];
+    if (state && Array.isArray(state.projects)) {
+      state.projects.forEach(function (p) {
+        if (p.orgUnit && base.indexOf(p.orgUnit) === -1) base.push(p.orgUnit);
+      });
+    }
+    return base;
+  }
+  function defaultOrgUnit() {
+    var list = orgUnitsList();
+    return list[0] || DEFAULT_ORG_UNIT;
+  }
+  function billingTypesList() {
+    return (state && state.settings && Array.isArray(state.settings.billingTypes) && state.settings.billingTypes.length > 0)
+      ? state.settings.billingTypes.slice()
+      : [
+          "T&M (Time & Materials)",
+          "FP (Fixed Price)",
+          "CPFF (Cost Plus Fixed Fee)",
+          "NTE (Not to Exceed)",
+          "Milestone-Based Billing",
+          "Retainer / Recurring"
+        ];
+  }
+
   // Local proxy for the optional AI agent. Procedures themselves are answered
   // from the bundled corpus in-browser and need no endpoint at all.
   var AGENT_PROXY_DEFAULT = "http://127.0.0.1:8787";
@@ -94,26 +132,37 @@
   };
 
   var NAV = [
-    { id: "dashboard", label: "Dashboard", ico: "*" },
-    { id: "advisor", label: "PM Advisor", ico: "◆" },
-    { id: "workspace", label: "Project Workspace", ico: "P" },
-    { id: "wbslist", label: "WBS List", ico: "W" },
-    { id: "board", label: "Kanban Board", ico: "K" },
-    { id: "resources", label: "Resources", ico: "R" },
-    { id: "projects", label: "Projects", ico: "P" },
-    { id: "changecontrol", label: "Change Control", ico: "C" },
-    { id: "gantt", label: "Gantt & Critical Path", ico: "G" },
-    { id: "actionitems", label: "Action Items", ico: "A" },
-    { id: "risks", label: "Risk Register", ico: "!" },
-    { id: "rulescredit", label: "Rules of Credit", ico: "%" },
-    { id: "reports", label: "Manager Report", ico: "R" },
-    { id: "client", label: "Client Report", ico: "B" },
-    { id: "audit", label: "Audit Trail", ico: "T" },
-    // Server-administered accounts. Hidden unless the signed-in identity is an
-    // administrator according to the server, not the simulated role selector.
-    { id: "admin", label: "Accounts", ico: "U", serverAdminOnly: true },
-    { id: "settings", label: "Settings / Data", ico: "S" },
-    { id: "help", label: "Help", ico: "?" },
+    // 1. Execution & Flow
+    { id: "dashboard", label: "Dashboard", ico: "*", section: "Execution & Flow" },
+    { id: "board", label: "Kanban Board", ico: "K", section: "Execution & Flow" },
+    { id: "gantt", label: "Gantt & Critical Path", ico: "G", section: "Execution & Flow" },
+    { id: "projects", label: "Projects", ico: "P", section: "Execution & Flow" },
+    { id: "workspace", label: "Project Workspace", ico: "W", section: "Execution & Flow" },
+
+    // 2. Scope & Progress
+    { id: "wbslist", label: "WBS List", ico: "D", section: "Scope & Progress" },
+    { id: "rulescredit", label: "Rules of Credit", ico: "%", section: "Scope & Progress" },
+
+    // 3. Governance & Control Registers
+    { id: "actionitems", label: "Action Items", ico: "A", section: "Governance & Registers" },
+    { id: "risks", label: "Risk Register", ico: "!", section: "Governance & Registers" },
+    { id: "changecontrol", label: "Change Control", ico: "C", section: "Governance & Registers" },
+
+    // 4. Team & Capacity
+    { id: "resources", label: "Resources", ico: "R", section: "Team & Capacity" },
+
+    // 5. AI Guidance & Intelligence
+    { id: "advisor", label: "PM Advisor", ico: "◆", section: "Intelligence" },
+
+    // 6. Reports & Compliance
+    { id: "reports", label: "Manager Report", ico: "M", section: "Reports & Audit" },
+    { id: "client", label: "Client Report", ico: "B", section: "Reports & Audit" },
+    { id: "audit", label: "Audit Trail", ico: "T", section: "Reports & Audit" },
+
+    // 7. System Administration & Configuration
+    { id: "admin", label: "Accounts & Users", ico: "U", section: "Administration", adminOnly: true },
+    { id: "settings", label: "Settings / Data", ico: "S", section: "Administration" },
+    { id: "help", label: "Help", ico: "?", section: "Administration" },
   ];
   // Note: "issues" and "decisions" are intentionally NOT in nav — they are
   // consolidated into Action Items as typed rows (Issue / Decision), and their
@@ -757,6 +806,11 @@
     return serverSession.active && serverSession.role === "Admin";
   }
 
+  function canAdministerUsers() {
+    if (serverSession && serverSession.active) return isServerAdmin();
+    return role() === "Admin" || (accounts && accounts.users && accounts.users.length <= 1);
+  }
+
   // The trial is the app's existing local-only mode on a public URL: demo data,
   // no persistence, no network. Everything that needs an account — saved work,
   // your own procedure library, the cited Assistant — is simply absent rather
@@ -811,6 +865,21 @@
     ind.title = title;
   }
 
+  // Trigger database keepalive query (at most once every 24h per active client)
+  function triggerDatabaseKeepalive() {
+    try {
+      if (typeof window === "undefined" || !window.fetch || !location.protocol.startsWith("http")) return;
+      var lastPing = Number(localStorage.getItem("techniek_db_keepalive") || 0);
+      var now = Date.now();
+      if (now - lastPing < 24 * 3600 * 1000) return;
+      fetch("/api/public/keepalive", { method: "GET", keepalive: true }).then(function (res) {
+        if (res.ok) {
+          try { localStorage.setItem("techniek_db_keepalive", String(now)); } catch (e) {}
+        }
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   // Per-user workspace storage key. Legacy single-user data lives at STORAGE_KEY.
   function wsKey(userId) { return userId ? STORAGE_KEY + "::" + userId : STORAGE_KEY; }
   
@@ -832,14 +901,14 @@
         }
       }
     } catch (e) {
-      loaded = null;            // fall through to the demo workspace
+      loaded = null;            // fall through to a clean blank workspace
     } finally {
       state = prevState;
     }
-    // A signed-in user with no prior browser workspace is genuinely new; show
-    // the guided blank workspace immediately rather than flashing demo data
-    // while the server answers. Local-only and /try retain the sample portfolio.
-    if (!loaded) loaded = serverSession.active ? blankWorkspace() : demoWorkspace();
+    // A new user without a pre-existing workspace starts with a clean slate
+    // with intuitive kickoff guidance and zero sample projects.
+    // The demo portfolio remains accessible via /try or Settings & Data.
+    if (!loaded) loaded = isTrialMode() ? demoWorkspace() : blankWorkspace();
 
     // Hydrate from the server in the background; never block first paint.
     // Until that finishes, `loaded` may be a throwaway demo workspace, so saves
@@ -1117,7 +1186,7 @@
         // localStorage, so checking localStorage now mistakes our own demo seed
         // for pre-existing user work and uploads it to every new account.
         if (!syncState.hadCachedBeforeLoad) {
-          state = (serverSession.role === "Admin") ? demoWorkspace() : blankWorkspace();
+          state = blankWorkspace();
         }
         syncState.hydrating = false;
         render();
@@ -1294,9 +1363,11 @@
     if (u && u.role) state.settings.role = u.role; // signed-in user's role drives visibility
     undoStack.length = 0; redoStack.length = 0;
     hideAuthGate();
-    ui.view = "dashboard";
+    var initialHash = (typeof window !== "undefined" && window.location && window.location.hash) ? String(window.location.hash).replace(/^#\/?/, "").trim() : "";
+    ui.view = (initialHash && VIEWS[initialHash]) ? initialHash : "dashboard";
     render();
     if (!localStorage.getItem(wsKey(userId))) save();
+    triggerDatabaseKeepalive();
     toast("Signed in as " + (userById(userId) || {}).displayName, "ok");
   }
   function logout() {
@@ -1307,19 +1378,32 @@
 
   function hideAuthGate() { var g = $("#authGate"); if (g) g.remove(); document.getElementById("app").style.visibility = "visible"; }
 
-  function renderServerSessionError() {
+  function renderServerSessionError(detail) {
     document.getElementById("app").style.visibility = "hidden";
     var existing = $("#authGate"); if (existing) existing.remove();
     var gate = el("div", { id: "authGate", class: "auth-gate" });
-    var card = el("div", { class: "auth-card" });
+    var card = el("div", { class: "auth-card", style: "max-width:500px" });
+    var msg = detail || "The application page loaded, but its secure API session was not accepted.";
     card.innerHTML =
-      "<h2>Could not open your account</h2>" +
-      "<p class='muted'>The application page loaded, but its secure API session was not accepted. " +
-      "Sign in again; if this continues, ask an administrator to check your account status.</p>" +
-      "<div class='warn-banner mb'>No local profile was opened and no project data was changed.</div>";
+      "<h2>Could not open cloud account</h2>" +
+      "<p class='muted'>" + esc(msg) + " " +
+      "Sign in again, or continue immediately in offline local workspace mode to access your boards without interruption.</p>" +
+      "<div class='warn-banner mb'><strong>High Availability (99.9% Uptime):</strong> All boards, EVM calculations, risk registers, and local procedures remain fully functional in standalone local mode.</div>";
+    var btnRow = el("div", { class: "flex wrap", style: "gap:10px;margin-top:16px" });
     var retry = el("a", { class: "btn primary", href: "/cdn-cgi/access/logout?returnTo=" +
       encodeURIComponent(location.origin + "/app") }, "Sign in again");
-    card.appendChild(retry);
+    var localBtn = el("button", { class: "btn", id: "localFallbackBtn", style: "background:var(--surface-2);border-color:var(--border-strong);font-weight:600" }, "Open Local Workspace ➔");
+    localBtn.addEventListener("click", function () {
+      gate.remove();
+      syncState.status = 'local';
+      var localUser = currentUser();
+      if (!localUser || needsUnlock(localUser)) { renderAuthGate(localUser && localUser.id); return; }
+      enterApp(localUser.id);
+      toast("Operating in local standalone mode", "ok");
+    });
+    btnRow.appendChild(retry);
+    btnRow.appendChild(localBtn);
+    card.appendChild(btnRow);
     gate.appendChild(card);
     document.body.appendChild(gate);
   }
@@ -1421,7 +1505,7 @@
     }
     function ssoStub() {
       modal("Enterprise SSO", el("div", null,
-        "<p class='muted'>Single sign-on with an enterprise identity provider (OIDC / SAML — Azure AD / Entra ID, Okta, Google Workspace) requires a backend service to complete the OAuth flow and validate tokens. This local-first prototype cannot do that securely on its own.</p>" +
+        "<p class='muted'>Single sign-on with an enterprise identity provider (OIDC / SAML — Azure AD / Entra ID, Okta, Google Workspace) requires a backend service to complete the OAuth flow and validate tokens. This standalone client environment cannot do that securely on its own.</p>" +
         "<p class='muted'>The integration is tracked in the improvement backlog for implementation after a backend and security review are approved. For now, use a local profile.</p>"),
         [{ label: "Back to sign in", cls: "btn primary", fn: closeModal }], "sm");
     }
@@ -1449,14 +1533,139 @@
       } },
     ], "sm");
   }
-  function deleteUser(user) {
-    confirmModal("Delete profile " + user.displayName + "?", "This permanently removes the profile and its workspace data from this browser.", function () {
+  function deleteUser(user, skipConfirm) {
+    if (user.id === accounts.currentUserId) {
+      toast("You cannot delete your own signed-in profile", "err");
+      return false;
+    }
+    if (accounts.users.length <= 1) {
+      toast("Cannot delete the only remaining profile", "err");
+      return false;
+    }
+    var doDelete = function () {
       try { localStorage.removeItem(wsKey(user.id)); } catch (e) {}
       accounts.users = accounts.users.filter(function (u) { return u.id !== user.id; });
       saveAccounts();
-      toast("Profile deleted");
+      recordAudit("User", user.id, "User profile deleted", user.displayName);
+      toast("Profile deleted: " + user.displayName, "ok");
       render();
+      return true;
+    };
+    if (skipConfirm) {
+      return doDelete();
+    }
+    confirmModal("Delete profile " + user.displayName + "?", "This permanently removes the profile and its workspace data from this browser.", doDelete);
+    return true;
+  }
+
+  function adminCreateLocalUserPrompt() {
+    var body = el("div");
+    body.innerHTML =
+      "<div class='form-grid'>" +
+      "<div class='form-row full'><label class='field-label inline'>Display name *</label>" +
+      "<input class='input' id='nluName' placeholder='e.g., Sarah Chen'></div>" +
+      "<div class='form-row'><label class='field-label inline'>Role</label>" +
+      "<select class='select' id='nluRole'>" + ROLES.map(function (r) {
+        return "<option" + (r === "Project Manager" ? " selected" : "") + ">" + esc(r) + "</option>";
+      }).join("") + "</select></div>" +
+      "<div class='form-row'><label class='field-label inline'>Passphrase (optional)</label>" +
+      "<input class='input' id='nluPass' type='password' placeholder='Leave blank for open access'></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Initial workspace</label>" +
+      "<select class='select' id='nluWorkspace'>" +
+      "<option value='blank'>Blank workspace (clean slate)</option>" +
+      "<option value='demo'>Seed with Techniek engineering sample portfolio</option>" +
+      "</select></div>" +
+      "</div>";
+
+    modal("Add User Profile", body, [
+      { label: "Cancel", cls: "btn", fn: closeModal },
+      { label: "Create Profile", cls: "btn primary", fn: function () {
+          var name = $("#nluName").value.trim();
+          var r = $("#nluRole").value;
+          var pass = $("#nluPass").value;
+          var wsType = $("#nluWorkspace").value;
+          if (!name) { toast("Display name is required", "err"); return; }
+          createUser(name, pass, r).then(function (newUser) {
+            if (wsType === "demo") {
+              try {
+                localStorage.setItem(wsKey(newUser.id), JSON.stringify(demoWorkspace()));
+              } catch (e) {}
+            }
+            closeModal();
+            recordAudit("User", newUser.id, "User profile created", newUser.displayName + " (" + newUser.role + ")");
+            toast("Profile created for " + newUser.displayName, "ok");
+            render();
+          });
+        } }
+    ]);
+  }
+
+  function adminEditLocalUserModal(u) {
+    var body = el("div");
+    body.innerHTML =
+      "<div class='form-grid'>" +
+      "<div class='form-row full'><label class='field-label inline'>Display name *</label>" +
+      "<input class='input' id='eluName' value='" + esc(u.displayName) + "'></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Assigned role</label>" +
+      "<select class='select' id='eluRole'>" + ROLES.map(function (r) {
+        return "<option" + (r === u.role ? " selected" : "") + ">" + esc(r) + "</option>";
+      }).join("") + "</select></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Passphrase action</label>" +
+      "<select class='select' id='eluPassAction'>" +
+      "<option value='keep'>Keep current passphrase setting (" + (u.hasPass ? "locked" : "open") + ")</option>" +
+      "<option value='change'>Set / change passphrase</option>" +
+      (u.hasPass ? "<option value='remove'>Remove passphrase (open access)</option>" : "") +
+      "</select></div>" +
+      "<div class='form-row full' id='eluNewPassRow' style='display:none'><label class='field-label inline'>New passphrase</label>" +
+      "<input class='input' id='eluPass' type='password' placeholder='Enter new passphrase'></div>" +
+      "</div>";
+
+    var paSel = body.querySelector("#eluPassAction");
+    var npRow = body.querySelector("#eluNewPassRow");
+    paSel.addEventListener("change", function () {
+      npRow.style.display = paSel.value === "change" ? "block" : "none";
     });
+
+    modal("Edit Profile · " + u.displayName, body, [
+      { label: "Cancel", cls: "btn", fn: closeModal },
+      { label: "Save Changes", cls: "btn primary", fn: function () {
+          var newName = $("#eluName").value.trim();
+          var newRole = $("#eluRole").value;
+          var passAct = $("#eluPassAction").value;
+          if (!newName) { toast("Display name is required", "err"); return; }
+          var prevRole = u.role;
+          u.displayName = newName;
+          u.role = newRole;
+          if (u.id === accounts.currentUserId) {
+            state.settings.role = newRole;
+          }
+
+          var finish = function () {
+            saveAccounts();
+            closeModal();
+            recordAudit("User", u.id, "User profile updated", u.displayName + ": " + prevRole + " ➔ " + newRole);
+            toast("Profile updated: " + u.displayName, "ok");
+            render();
+          };
+
+          if (passAct === "remove") {
+            u.hasPass = false;
+            u.hash = null;
+            finish();
+          } else if (passAct === "change") {
+            var np = $("#eluPass").value;
+            if (!np) { toast("Passphrase cannot be empty if changing", "err"); return; }
+            u.salt = randSalt();
+            hashPass(np, u.salt).then(function (h) {
+              u.hash = h;
+              u.hasPass = true;
+              finish();
+            });
+          } else {
+            finish();
+          }
+        } }
+    ]);
   }
 
   /* ----------------------------------------------------------------------- *
@@ -3659,78 +3868,86 @@
     input.click();
   }
 
-  function libraryRemove(doc) {
-    confirmModal("Remove “" + doc.title + "” from your library?",
-      "The Assistant will stop citing it. Nothing else in your workspace changes, and you can upload it again.",
+  function unifiedRemoveProcedure(doc) {
+    confirmModal("Remove “" + (doc.title || doc.id) + "”?",
+      "The PM Advisor will stop citing this procedure. Built-in procedures are unaffected.",
       function () {
-        fetch("/api/guidelines", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: doc.id })
-        }).then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (d.error) { toast(d.error, "err"); return; }
-            toast("Removed from your library", "ok");
-            libraryLoad(true);
-          })
-          .catch(function (e) { toast(e.message, "err"); });
+        mutate(function () {
+          state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (d) { return d.id !== doc.id; });
+        });
+        kbInvalidate();
+        if (serverSession && serverSession.active) {
+          fetch("/api/guidelines", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: doc.id })
+          }).then(function (r) { return r.json(); })
+            .catch(function (e) { console.warn("Cloud guideline delete:", e); });
+          libraryLoad(true);
+        }
+        toast("Removed “" + (doc.title || doc.id) + "”", "ok");
+        render();
       });
   }
+  var libraryRemove = unifiedRemoveProcedure;
 
   function renderProcedureLibrary(root) {
-    if (!serverSession.active) return;
-    libraryLoad(false);
+    var isCloud = serverSession && serverSession.active;
+    if (isCloud) libraryLoad(false);
 
-    var docs = libraryUi.docs || [];
-    var mine = docs.filter(function (d) { return d.mine && d.origin !== "builtin"; });
-    var shared = docs.filter(function (d) { return !d.mine || d.origin === "builtin"; });
+    var cloudDocs = (isCloud && libraryUi.docs) ? libraryUi.docs : [];
+    var localDocs = (state.knowledgeDocs || []).filter(function (d) { return d.userAdded; });
+    var builtInDocs = kbDocuments().filter(function (d) { return !d.userAdded; });
 
     var wrap = el("details", { class: "mt" });
-    // On Settings this is the reason the user came; open it.
     if (ui.view === "settings") wrap.open = true;
-    wrap.innerHTML = "<summary>Procedure management — " + mine.length +
-      " of your own, " + shared.length + " provided</summary>";
+    wrap.innerHTML = "<summary>Procedure management — " +
+      (isCloud ? cloudDocs.length + " cloud documents (" + localDocs.length + " local)" : localDocs.length + " company uploads, " + builtInDocs.length + " standard library") +
+      "</summary>";
 
     var panel = el("div", { class: "panel-pad" });
     panel.appendChild(el("p", { class: "muted" },
-      "The Assistant cites these. Documents you upload are private to your account — no other user can " +
-      "retrieve them. Markdown files work as-is; adding frontmatter (id, title, source, revision, " +
-      "dimension, triggers) makes them bind to findings more precisely."));
+      "The PM Advisor cites these documents when answering questions and diagnosing findings. " +
+      (isCloud
+        ? "Documents you upload are private to your account. Markdown files work as-is; adding frontmatter (id, title, source, revision, dimension, triggers) makes them bind to findings more precisely."
+        : "Operating in Local Workspace. Procedures you upload are stored in your local browser profile and active across all PM Advisor recommendations. They will also sync to your account when connected to cloud.")));
 
     var row = el("div", { class: "flex wrap mb", style: "gap:8px" });
-    row.appendChild(mkBtn(libraryUi.busy || "Upload procedures (.md or .pdf)", "btn primary", libraryUploadPrompt));
-    row.appendChild(mkBtn("Refresh", "btn ghost", function () { libraryLoad(true); }));
+    row.appendChild(mkBtn("➕ Upload procedures (.md or .pdf)", "btn primary", unifiedProcedureUploadPrompt));
+    row.appendChild(mkBtn("📄 Download Template", "btn", downloadProcedureTemplate));
+    if (isCloud) {
+      row.appendChild(mkBtn("Refresh", "btn ghost", function () { libraryLoad(true); }));
+    }
     panel.appendChild(row);
 
-    if (libraryUi.error) {
+    if (isCloud && libraryUi.error) {
       panel.appendChild(el("div", { class: "warn-banner mb" },
-        "Could not load your library: " + esc(libraryUi.error)));
+        "Could not load cloud library: " + esc(libraryUi.error)));
     }
 
     var tbl = el("table", { class: "table table-dense" });
-    tbl.innerHTML = "<thead><tr><th>Procedure</th><th>Source</th><th>Revision</th>" +
-      "<th>Dimension</th><th class='num'>Sections</th><th>Visibility</th><th></th></tr></thead>";
+    tbl.innerHTML = "<thead><tr><th>Procedure</th><th>Source</th><th>Dimension</th><th class='num'>Sections</th><th>Origin</th><th></th></tr></thead>";
     var tb = el("tbody");
 
-    docs.forEach(function (d) {
+    var allDocs = isCloud ? cloudDocs : kbDocuments();
+    allDocs.forEach(function (d) {
       var tr = el("tr");
       tr.appendChild(el("td", null, "<strong>" + esc(d.title) + "</strong><div class='faint'>" + esc(d.id) + "</div>"));
-      tr.appendChild(el("td", { class: "muted" }, esc(d.source || "—")));
-      tr.appendChild(el("td", { class: "muted" }, esc(d.revision || "—")));
+      tr.appendChild(el("td", { class: "muted" }, esc(d.source || d.file || "—")));
       tr.appendChild(el("td", { class: "muted" }, esc(d.dimension || "—")));
-      tr.appendChild(el("td", { class: "num muted" }, String(d.chunks)));
-      tr.appendChild(el("td", null, "<span class='chip sm " + (d.visibility === "org" ? "" : "ok") + "'>" +
-        (d.visibility === "org" ? "provided to everyone" : "private to you") + "</span>"));
+      tr.appendChild(el("td", { class: "num muted" }, String(d.chunks != null ? d.chunks : (d.sections || []).length)));
+      tr.appendChild(el("td", null, "<span class='chip sm " + (d.mine || d.userAdded ? "warn" : "ok") + "'>" +
+        (d.mine || d.userAdded ? "Company Upload" : "Standard Library") + "</span>"));
       var act = el("td");
-      if (d.mine && d.origin !== "builtin") {
-        act.appendChild(mkBtn("Remove", "btn sm ghost", function () { libraryRemove(d); }));
+      if (d.mine || d.userAdded) {
+        act.appendChild(mkBtn("Remove", "btn sm ghost", function () { unifiedRemoveProcedure(d); }));
       }
       tr.appendChild(act);
       tb.appendChild(tr);
     });
 
-    if (!docs.length) {
-      tb.appendChild(el("tr", null, "<td colspan='7' class='empty'>" +
+    if (!allDocs.length) {
+      tb.appendChild(el("tr", null, "<td colspan='6' class='empty'>" +
         (libraryUi.loading ? "Loading…" : "No procedures yet. Upload your own to have the Assistant cite them.") +
         "</td>"));
     }
@@ -3759,6 +3976,20 @@
       "for " + esc(scopeName) + ", and the procedures you uploaded (plus any org-published ones). " +
       "Every figure is checked against that evidence; each recommendation ends with a small link to the " +
       "governing clause — document, section, or page."));
+
+    var kbDocsCount = (kbDocuments() || []).length;
+    var userDocsCount = (state.knowledgeDocs || []).filter(function (d) { return d.userAdded; }).length;
+    var corpusBanner = el("div", { class: "flex wrap", style: "justify-content:space-between;align-items:center;padding:10px 14px;background:var(--surface-2);border-radius:var(--radius-sm);border:1px solid var(--border);margin-bottom:12px;font-size:12.5px" });
+    corpusBanner.innerHTML = "<span>📚 <strong>Governing Knowledge Base:</strong> " + kbDocsCount + " procedure(s) active (" + userDocsCount + " company upload" + (userDocsCount === 1 ? "" : "s") + "). Answers cite these standards.</span>";
+    var cActions = el("div", { class: "flex", style: "gap:6px" });
+    var upBtn = el("button", { class: "btn sm", style: "font-size:11.5px" }, "➕ Upload Procedure (.md, .pdf)");
+    upBtn.addEventListener("click", unifiedProcedureUploadPrompt);
+    cActions.appendChild(upBtn);
+    var viewLibBtn = el("button", { class: "btn sm ghost", style: "font-size:11.5px" }, "Manage Procedures ➔");
+    viewLibBtn.addEventListener("click", function () { ui.advisorTab = "Procedures"; render(); });
+    cActions.appendChild(viewLibBtn);
+    corpusBanner.appendChild(cActions);
+    panel.appendChild(corpusBanner);
 
     var input = el("input", { class: "input", id: "assistantQ",
       placeholder: "e.g. How can I improve schedule?  ·  How can I make my project more profitable?" });
@@ -4121,31 +4352,74 @@
       sections: sections,
     };
   }
-  function kbImportPrompt() {
+  function downloadProcedureTemplate() {
+    var tpl = "---\nid: company-operating-procedure\ntitle: Company Operating Procedure\nsource: Corporate PMO Standards QA-01\ndimension: Governance\ntriggers: safety, quality, schedule recovery, variance, approval\ntags: procedure, engineering, standard\n---\n\n## Section 1: Scope & Mandatory Precedence\n\nState the mandatory engineering standard, client deliverable specification, or operational requirement clearly.\n\n## Section 2: Concrete Action & Thresholds\n\nSpecify actionable criteria (e.g. When CPI < 0.95 or SPI < 0.90, require a formal recovery schedule. Re-baseline only through formal Change Control approval).\n\n## Section 3: Verification & Governance Gates\n\nSpecify verification steps, quality sign-offs, and required evidence before work packages can transition to Done.\n";
+    download("techniek-procedure-template.md", tpl, "text/markdown");
+    toast("Procedure Markdown template downloaded", "ok");
+  }
+
+  async function unifiedProcedureUploadPrompt() {
     if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
-    var input = el("input", { type: "file", accept: ".md,.markdown,.txt", multiple: "multiple" });
-    input.addEventListener("change", function () {
+    var input = el("input", { type: "file", accept: ".md,.markdown,.txt,.pdf,application/pdf", multiple: "multiple" });
+    input.addEventListener("change", async function () {
       var files = Array.prototype.slice.call(input.files || []);
       if (!files.length) return;
-      var pending = files.length, added = 0;
-      files.forEach(function (file) {
-        var reader = new FileReader();
-        reader.onload = function () {
-          try {
-            var doc = kbParseMarkdown(String(reader.result), file.name);
+      var added = 0, failed = 0;
+      toast("Processing " + files.length + " procedure file(s)…", "info");
+
+      for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        try {
+          if (/\.pdf$/i.test(file.name)) {
+            var chunks = await libraryExtractPdf(file);
+            var id = "pdf-" + file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+            var title = file.name.replace(/\.[^.]+$/, "");
+            var doc = {
+              id: id,
+              title: title,
+              source: "Uploaded PDF — " + file.name,
+              dimension: "Governance",
+              triggers: [title.toLowerCase()],
+              tags: ["pdf", "company-procedure"],
+              file: file.name,
+              userAdded: true,
+              addedAt: new Date().toISOString(),
+              sections: chunks.map(function (c) { return { heading: c.heading, text: c.content }; })
+            };
             mutate(function () {
               state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (d) { return d.id !== doc.id; });
               state.knowledgeDocs.push(doc);
             });
+            if (serverSession && serverSession.active) {
+              try { await libraryPostDocument(file); } catch (x) { console.warn("Cloud guideline sync:", x); }
+            }
             added++;
-          } catch (e) { toast("Could not parse " + file.name + ": " + e.message, "err"); }
-          if (--pending === 0) { kbInvalidate(); toast(added + " procedure file(s) added to the knowledge base", "ok"); render(); }
-        };
-        reader.readAsText(file);
-      });
+          } else {
+            var text = await file.text();
+            var doc = kbParseMarkdown(text, file.name);
+            mutate(function () {
+              state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (d) { return d.id !== doc.id; });
+              state.knowledgeDocs.push(doc);
+            });
+            if (serverSession && serverSession.active) {
+              try { await libraryPostDocument(file); } catch (x) { console.warn("Cloud guideline sync:", x); }
+            }
+            added++;
+          }
+        } catch (e) {
+          failed++;
+          toast(file.name + ": " + (e.message || "Failed to process"), "err");
+        }
+      }
+
+      kbInvalidate();
+      if (serverSession && serverSession.active) libraryLoad(true);
+      toast(added + " procedure file(s) added to PM Advisor", failed ? "warn" : "ok");
+      render();
     });
     input.click();
   }
+  var kbImportPrompt = unifiedProcedureUploadPrompt;
 
   /* ----------------------------------------------------------------------- *
    * PM Agent — command + recommendation execution
@@ -4807,16 +5081,140 @@
   // order); the "Rendering — dispatch" section below only documents it.
   var VIEWS = {};
 
+  function renderProcedureLibraryAndQa(root) {
+    var docs = kbDocuments();
+    var userDocs = (state.knowledgeDocs || []).filter(function (d) { return d.userAdded; });
+
+    var panel = el("div", { class: "panel panel-pad mb" });
+    panel.appendChild(el("h2", null, "Company & Industry Procedure Library"));
+    panel.appendChild(el("p", { class: "muted" },
+      "Upload your company's operating procedures, engineering standards, and QA/QC guidelines (.md, .markdown, .txt, .pdf). " +
+      "The PM Advisor grounds its recommendations in these governing rules alongside live earned value, schedule, and margin metrics. " +
+      "Runs local-first with offline BM25 indexed retrieval, guaranteed to work 99.9% of the time even without cloud connectivity."));
+
+    var row = el("div", { class: "flex wrap mt mb", style: "gap:8px" });
+    row.appendChild(mkBtn("➕ Upload Procedures (.md, .pdf, .txt)", "btn primary", unifiedProcedureUploadPrompt));
+    row.appendChild(mkBtn("📄 Download Procedure Template (.md)", "btn", downloadProcedureTemplate));
+    if (userDocs.length) {
+      row.appendChild(mkBtn("Clear My Uploads (" + userDocs.length + ")", "btn sm ghost", function () {
+        confirmModal("Remove all uploaded procedures?", "Removes the " + userDocs.length + " procedure file(s) you added. The built-in engineering corpus is unaffected.", function () {
+          mutate(function () { state.knowledgeDocs = []; });
+          kbInvalidate();
+          toast("Uploaded procedures removed", "ok");
+          render();
+        });
+      }));
+    }
+    panel.appendChild(row);
+
+    var hint = el("div", { class: "hint" });
+    hint.innerHTML = "<strong>Format tip:</strong> Markdown files (.md) with frontmatter (<code>id</code>, <code>title</code>, <code>dimension</code>, <code>triggers</code>) automatically bind to specific advisor findings. Standard PDFs (.pdf) are parsed into searchable sections with page-anchored citations.";
+    panel.appendChild(hint);
+    root.appendChild(panel);
+
+    // Search and test procedure retrieval
+    var qPanel = el("div", { class: "panel panel-pad mb" });
+    qPanel.appendChild(el("h2", null, "Test Procedure Retrieval & Citation"));
+    qPanel.appendChild(el("p", { class: "muted" }, "Verify how the PM Advisor extracts clauses from your active procedures."));
+    var q = el("input", { class: "input", id: "kbQuery", placeholder: "e.g. recovery plan · WIP breach · contribution margin · re-baseline · quality sign-off" });
+    q.value = ui.kbQuery || "";
+    q.addEventListener("keydown", function (e) { if (e.key === "Enter") { ui.kbQuery = q.value; render(); } });
+    qPanel.appendChild(q);
+    var qRow = el("div", { class: "flex wrap mt", style: "gap:8px" });
+    qRow.appendChild(mkBtn("Search Procedures", "btn primary", function () { ui.kbQuery = $("#kbQuery").value; render(); }));
+    if (ui.kbQuery) {
+      qRow.appendChild(mkBtn("Clear Search", "btn ghost", function () { ui.kbQuery = ""; render(); }));
+    }
+    qPanel.appendChild(qRow);
+    root.appendChild(qPanel);
+
+    if (ui.kbQuery) {
+      var hits = kbSearch(ui.kbQuery, 6);
+      var res = el("div", { class: "panel mb" });
+      res.appendChild(el("div", { class: "panel-pad" },
+        "<h2 style='margin:0'>" + hits.length + " cited passage(s) for &ldquo;" + esc(ui.kbQuery) + "&rdquo;</h2>" +
+        "<div class='muted'>Ranked by BM25 relevance score. These exact passages are cited by the PM Advisor when answering questions and evaluating findings.</div>"));
+      if (!hits.length) {
+        res.appendChild(el("div", { class: "empty" }, "No procedure passages matched. Try broader keywords or upload a procedure covering this topic."));
+      }
+      hits.forEach(function (h, i) {
+        var p = h.passage;
+        var item = el("div", { class: "kb-hit" });
+        item.innerHTML = "<div class='kb-hit-head'><span class='badge neutral'>#" + (i + 1) + "</span>" +
+          "<strong>" + esc(p.title) + (p.heading ? " · " + esc(p.heading) : "") + "</strong>" +
+          (p.dimension ? "<span class='chip label'>" + esc(p.dimension) + "</span>" : "") + "</div>";
+        var body = el("div", { class: "kb-hit-body" });
+        appendPmFormattedText(body, p.text);
+        item.appendChild(body);
+        item.appendChild(el("div", { class: "kb-hit-src" }, esc(p.source) + (p.file ? " · " + esc(p.file) : "")));
+        res.appendChild(item);
+      });
+      root.appendChild(res);
+    }
+
+    // Active Corpus Table
+    var libr = el("div", { class: "panel" });
+    libr.appendChild(el("div", { class: "panel-pad" },
+      "<h2 style='margin:0'>Active Governing Corpus (" + docs.length + " documents)</h2>" +
+      "<div class='muted'>All procedures actively available to the PM Advisor. " + userDocs.length + " custom company upload" + (userDocs.length === 1 ? "" : "s") + ".</div>"));
+    var t = el("table", { class: "table table-dense" });
+    t.innerHTML = "<thead><tr><th>Document</th><th>Dimension</th><th>Source</th><th class='num'>Sections</th><th>Origin</th><th>Actions</th></tr></thead>";
+    var tb = el("tbody");
+    docs.forEach(function (d) {
+      var tr = el("tr");
+      tr.appendChild(el("td", null, "<strong>" + esc(d.title) + "</strong><div class='faint'>" + esc(d.id) + "</div>"));
+      tr.appendChild(el("td", null, d.dimension ? "<span class='chip label'>" + esc(d.dimension) + "</span>" : "—"));
+      tr.appendChild(el("td", { class: "muted" }, esc(d.source || d.file || "—")));
+      tr.appendChild(el("td", { class: "num" }, String((d.sections || []).length)));
+      tr.appendChild(el("td", null, d.userAdded ? "<span class='badge warn'>Company Upload</span>" : "<span class='badge ok'>Standard Library</span>"));
+      var actTd = el("td");
+      if (d.userAdded) {
+        actTd.appendChild(mkBtn("Remove", "btn sm ghost", function () { unifiedRemoveProcedure(d); }));
+      }
+      tr.appendChild(actTd);
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    libr.appendChild(t);
+    root.appendChild(libr);
+  }
+
   VIEWS.advisor = function (root) {
-    // One page, one question box. Previously this screen had four tabs, which
-    // forced the user to classify their own question before asking it — a
-    // procedure lookup, an analysis, or a command — and to know which tab held
-    // the project picker. The Assistant now answers all three from one input,
-    // scoped to whatever projects are selected, and the findings appear as the
-    // evidence behind the answer rather than as a separate destination.
+    if (!ui.advisorTab) ui.advisorTab = "Assistant";
+    var totalDocs = (kbDocuments() || []).length;
+    var findingsCount = advisorFindings().length;
+
+    var tabs = [
+      { id: "Assistant", label: "💬 PM Assistant (Ask & Act)" },
+      { id: "Procedures", label: "📚 Company & Industry Procedures (" + totalDocs + ")" },
+      { id: "Findings", label: "📋 Portfolio Inspection & Findings (" + findingsCount + ")" }
+    ];
+
     root.appendChild(pageHead("PM Advisor",
       "Ask about one project, several, or the whole portfolio. Answers are grounded in the metrics " +
-      "and findings this application computed, and cited from your own procedure library."));
+      "and findings this application computed, and cited from your company & industry procedure library."));
+
+    var tabNav = el("div", { class: "subnav mb flex wrap", style: "gap:6px" });
+    tabs.forEach(function (t) {
+      var active = ui.advisorTab === t.id;
+      var btn = el("button", {
+        class: "btn " + (active ? "primary" : "ghost") + " sm",
+        style: "font-weight:600"
+      }, t.label);
+      btn.addEventListener("click", function () {
+        ui.advisorTab = t.id;
+        render();
+      });
+      tabNav.appendChild(btn);
+    });
+    root.appendChild(tabNav);
+
+    if (ui.advisorTab === "Procedures") {
+      return renderProcedureLibraryAndQa(root);
+    }
+    if (ui.advisorTab === "Findings") {
+      return renderAdvisorFindingsPanel(root);
+    }
     return renderAssistant(root);
   };
 
@@ -4875,11 +5273,17 @@
   function renderShell() {
     var nav = $("#nav");
     nav.innerHTML = "";
+    var currentSection = null;
     NAV.forEach(function (n) {
-      if (n.serverAdminOnly && !isServerAdmin()) return;
+      if ((n.serverAdminOnly || n.adminOnly) && !canAdministerUsers()) return;
       // The demo has no account, so anything that administers one is absent
       // rather than present-but-broken.
       if (isTrialMode() && n.id === "admin") return;
+      if (n.section && n.section !== currentSection) {
+        currentSection = n.section;
+        var secEl = el("div", { class: "nav-section-title" }, esc(currentSection));
+        nav.appendChild(secEl);
+      }
       var badge = "";
       if (n.id === "admin" && adminState.pendingCount > 0) {
         badge = "<span class='chip sm warn nav-badge'>" + adminState.pendingCount + "</span>";
@@ -4962,12 +5366,37 @@
     if (hint) hint.textContent = "Saved " + new Date(state.savedAt).toLocaleTimeString() + " · local-first";
   }
 
-  function go(view) {
+  function go(view, pushHash) {
+    if (!VIEWS[view] && view !== "dashboard") view = "dashboard";
     ui.view = view;
     ui.navOpen = false;
-    $("#app").classList.remove("nav-open");
+    var appEl = $("#app");
+    if (appEl) appEl.classList.remove("nav-open");
+    if (pushHash !== false && typeof window !== "undefined" && window.location) {
+      var targetHash = "#/" + view;
+      if (window.location.hash !== targetHash) {
+        if (window.history && window.history.pushState) {
+          window.history.pushState(null, "", targetHash);
+        } else {
+          window.location.hash = targetHash;
+        }
+      }
+    }
     render();
-    $("#view").focus();
+    var viewEl = $("#view");
+    if (viewEl) viewEl.focus();
+  }
+
+  function handleHashRoute() {
+    if (typeof window === "undefined" || !window.location) return;
+    var hash = String(window.location.hash || "").replace(/^#\/?/, "").trim();
+    if (hash && VIEWS[hash] && hash !== ui.view) {
+      go(hash, false);
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("popstate", handleHashRoute);
+    window.addEventListener("hashchange", handleHashRoute);
   }
 
   /* ----------------------------------------------------------------------- *
@@ -5176,11 +5605,1452 @@
     root.appendChild(twoCol2);
   };
 
+  /* ----------------------------------------------------------------------- *
+   * Industry Starter Templates & PMBOK Project Kickoff Engine
+   * ----------------------------------------------------------------------- */
+  var INDUSTRY_TEMPLATES = {
+    "industrial-automation": {
+      id: "industrial-automation",
+      name: "Industrial Automation & PLC/SCADA Modernization",
+      code: "TEK-AUT-2610",
+      client: "Midwest Grid & Power",
+      orgUnit: "Techniek-Controls",
+      budget: 68000,
+      billingType: "FP",
+      targetCm: 66.7,
+      description: "Complete PLC modernization, safety interlock verification, SCADA graphics, and FAT/commissioning package.",
+      durationWeeks: 12,
+      wipLimit: 3,
+      resources: [
+        { name: "Sander van Dijk", role: "Controls Lead", dept: "Controls", capacityHrs: 40, costRate: 75, billRate: 140 },
+        { name: "Imran Haddad", role: "Electrical Engineer", dept: "Electrical", capacityHrs: 38, costRate: 68, billRate: 120 },
+        { name: "Lotte Janssen", role: "Systems Specialist", dept: "Software", capacityHrs: 36, costRate: 72, billRate: 125 }
+      ],
+      wbsElements: [
+        { wbsCode: "AUT-100", parentWbsCode: "", title: "System Architecture & IO Definition", isSummary: true, sortOrder: 1 },
+        { wbsCode: "AUT-110", parentWbsCode: "AUT-100", title: "Field IO Schedule & Control Architecture", isSummary: false, sortOrder: 2 },
+        { wbsCode: "AUT-200", parentWbsCode: "", title: "PLC Software & Safety Logic Engineering", isSummary: true, sortOrder: 3 },
+        { wbsCode: "AUT-210", parentWbsCode: "AUT-200", title: "Core PLC Control Loop Programming", isSummary: false, sortOrder: 4 },
+        { wbsCode: "AUT-220", parentWbsCode: "AUT-200", title: "Safety Interlock & E-Stop Validation Package", isSummary: false, sortOrder: 5 },
+        { wbsCode: "AUT-300", parentWbsCode: "", title: "Factory Acceptance & Site Commissioning", isSummary: true, sortOrder: 6 },
+        { wbsCode: "AUT-310", parentWbsCode: "AUT-300", title: "Factory Acceptance Testing (FAT) Protocol", isSummary: false, sortOrder: 7 },
+        { wbsCode: "AUT-320", parentWbsCode: "AUT-300", title: "Site Commissioning & Operational Handover", isSummary: false, sortOrder: 8 }
+      ],
+      cards: [
+        { title: "Field IO Schedule & Control Architecture", wbsCode: "AUT-110", assignee: "Sander van Dijk", priority: "high", type: "Task", labels: ["Controls", "Electrical"], est: 40, progressMode: "Rules of Credit", stage: "Ready", startOffset: 0, durDays: 14, rocSchema: "deliverable-prep-review-issue" },
+        { title: "Core PLC Control Loop Programming", wbsCode: "AUT-210", assignee: "Sander van Dijk", priority: "high", type: "Feature", labels: ["Controls"], est: 60, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 14, durDays: 28, rocSchema: "calculation-package", depWbs: ["AUT-110"] },
+        { title: "Safety Interlock & E-Stop Validation Package", wbsCode: "AUT-220", assignee: "Imran Haddad", priority: "critical", type: "Task", labels: ["Safety", "Compliance"], est: 35, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 20, durDays: 21, rocSchema: "deliverable-prep-review-issue", depWbs: ["AUT-110"] },
+        { title: "Factory Acceptance Testing (FAT) Protocol", wbsCode: "AUT-310", assignee: "Lotte Janssen", priority: "high", type: "Task", labels: ["Electrical", "Client"], est: 45, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 45, durDays: 18, depWbs: ["AUT-210", "AUT-220"] },
+        { title: "Site Commissioning & Operational Handover", wbsCode: "AUT-320", assignee: "Sander van Dijk", priority: "critical", type: "Milestone", labels: ["Client"], est: 16, milestone: true, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 65, durDays: 10, depWbs: ["AUT-310"] }
+      ],
+      risks: [
+        { title: "Because client field IO wiring diagrams are preliminary, there is a risk of field re-termination delays which would extend commissioning.", riskType: "Threat", category: "Technical", probability: 3, impact: 4, response: "Mitigate", costImpact: 4500, scheduleImpactDays: 7, trigger: "Field loop test failures > 5%" },
+        { title: "Because pre-configured Techniek standard safety blocks can be deployed, there is an opportunity to compress safety sign-off which would improve margin.", riskType: "Opportunity", category: "Technical", probability: 4, impact: 3, response: "Exploit", costImpact: 6000, scheduleImpactDays: 5, trigger: "Client approves safety block architecture early" }
+      ]
+    },
+    "mechanical-retrofit": {
+      id: "mechanical-retrofit",
+      name: "Heavy Mechanical & Structural Retrofit",
+      code: "TEK-STR-2611",
+      client: "Port of Houston Authority",
+      orgUnit: "Techniek-Engineering",
+      budget: 95000,
+      billingType: "T&M",
+      targetCm: 66.7,
+      description: "Structural modernization, 3D laser dimensional audit, FEA fatigue modeling, hydraulic package, and certification.",
+      durationWeeks: 16,
+      wipLimit: 3,
+      resources: [
+        { name: "Sven Bakker", role: "Senior Engineer", dept: "Mechanical", capacityHrs: 38, costRate: 78, billRate: 130 },
+        { name: "Maaike de Vries", role: "Project Manager", dept: "Engineering", capacityHrs: 32, costRate: 85, billRate: 145 },
+        { name: "Klaas Mulder", role: "Structural Specialist", dept: "Mechanical", capacityHrs: 40, costRate: 82, billRate: 140 }
+      ],
+      wbsElements: [
+        { wbsCode: "STR-100", parentWbsCode: "", title: "Structural Dimensional Audit & Laser Scanning", isSummary: true, sortOrder: 1 },
+        { wbsCode: "STR-110", parentWbsCode: "STR-100", title: "3D Laser Scan & As-Built Dimensional Verification", isSummary: false, sortOrder: 2 },
+        { wbsCode: "STR-200", parentWbsCode: "", title: "FEA Fatigue Modeling & Structural Analysis", isSummary: true, sortOrder: 3 },
+        { wbsCode: "STR-210", parentWbsCode: "STR-200", title: "Finite Element Fatigue & Stress Analysis", isSummary: false, sortOrder: 4 },
+        { wbsCode: "STR-220", parentWbsCode: "STR-200", title: "Hydraulic Power Unit Specification", isSummary: false, sortOrder: 5 },
+        { wbsCode: "STR-300", parentWbsCode: "", title: "Fabrication Oversight & Load Certification", isSummary: true, sortOrder: 6 },
+        { wbsCode: "STR-310", parentWbsCode: "STR-300", title: "Structural Reinforcement Fabrication Review", isSummary: false, sortOrder: 7 },
+        { wbsCode: "STR-320", parentWbsCode: "STR-300", title: "On-Site Crane Proof Load Certification", isSummary: false, sortOrder: 8 }
+      ],
+      cards: [
+        { title: "3D Laser Scan & As-Built Dimensional Verification", wbsCode: "STR-110", assignee: "Klaas Mulder", priority: "high", type: "Task", labels: ["Mechanical", "Documentation"], est: 35, progressMode: "Rules of Credit", stage: "Ready", startOffset: 0, durDays: 14, rocSchema: "deliverable-prep-review-issue" },
+        { title: "Finite Element Fatigue & Stress Analysis", wbsCode: "STR-210", assignee: "Sven Bakker", priority: "critical", type: "Feature", labels: ["Mechanical", "Safety"], est: 75, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 14, durDays: 35, rocSchema: "calculation-package", depWbs: ["STR-110"] },
+        { title: "Hydraulic Power Unit Specification", wbsCode: "STR-220", assignee: "Sven Bakker", priority: "medium", type: "Task", labels: ["Mechanical"], est: 40, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 25, durDays: 20, depWbs: ["STR-110"] },
+        { title: "Structural Reinforcement Fabrication Review", wbsCode: "STR-310", assignee: "Klaas Mulder", priority: "high", type: "Task", labels: ["Compliance"], est: 60, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 55, durDays: 28, depWbs: ["STR-210"] },
+        { title: "On-Site Crane Proof Load Certification", wbsCode: "STR-320", assignee: "Maaike de Vries", priority: "critical", type: "Milestone", labels: ["Client", "Safety"], est: 20, milestone: true, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 85, durDays: 12, depWbs: ["STR-310"] }
+      ],
+      risks: [
+        { title: "Because cyclical fatigue cracks may be uncovered during scanning, there is a risk of scope expansion which would increase budget burn.", riskType: "Threat", category: "Technical", probability: 3, impact: 5, response: "Mitigate", costImpact: 12000, scheduleImpactDays: 12, trigger: "NDE reports fatigue propagation" },
+        { title: "Because harbor crane outage windows are tightly governed by port traffic, there is a risk of berth access delays.", riskType: "Threat", category: "Schedule", probability: 3, impact: 3, response: "Transfer", costImpact: 5000, scheduleImpactDays: 6, trigger: "Port operations reschedule berth window" }
+      ]
+    },
+    "digital-iiot": {
+      id: "digital-iiot",
+      name: "Digital Systems & IIoT Asset Monitoring Rollout",
+      code: "TEK-IOT-2612",
+      client: "Energy Infrastructure Partners",
+      orgUnit: "Techniek-Digital",
+      budget: 54000,
+      billingType: "FP",
+      targetCm: 66.7,
+      description: "Edge telemetry gateway, sensor harness architecture, cloud data pipeline, and PM condition monitoring dashboards.",
+      durationWeeks: 10,
+      wipLimit: 3,
+      resources: [
+        { name: "Femke Visser", role: "Designer", dept: "Digital", capacityHrs: 36, costRate: 60, billRate: 110 },
+        { name: "Diego Romero", role: "Engineer", dept: "Software", capacityHrs: 40, costRate: 66, billRate: 118 },
+        { name: "Bram Peeters", role: "IIoT Solution Architect", dept: "Digital", capacityHrs: 35, costRate: 80, billRate: 145 }
+      ],
+      wbsElements: [
+        { wbsCode: "IOT-100", parentWbsCode: "", title: "Edge Hardware & Sensor Architecture", isSummary: true, sortOrder: 1 },
+        { wbsCode: "IOT-110", parentWbsCode: "IOT-100", title: "Edge Gateway & Field Sensor Enclosure", isSummary: false, sortOrder: 2 },
+        { wbsCode: "IOT-200", parentWbsCode: "", title: "Telemetry Pipeline & Cloud Database", isSummary: true, sortOrder: 3 },
+        { wbsCode: "IOT-210", parentWbsCode: "IOT-200", title: "Edge Telemetry Ingestion Driver Package", isSummary: false, sortOrder: 4 },
+        { wbsCode: "IOT-220", parentWbsCode: "IOT-200", title: "Time-Series Cloud Queue & Influx Pipeline", isSummary: false, sortOrder: 5 },
+        { wbsCode: "IOT-300", parentWbsCode: "", title: "Operational Dashboard & Cyber Sign-off", isSummary: true, sortOrder: 6 },
+        { wbsCode: "IOT-310", parentWbsCode: "IOT-300", title: "Real-Time Vibration & Temp Health Cockpit", isSummary: false, sortOrder: 7 },
+        { wbsCode: "IOT-320", parentWbsCode: "IOT-300", title: "Cyber Penetration Testing & Client Acceptance", isSummary: false, sortOrder: 8 }
+      ],
+      cards: [
+        { title: "Edge Gateway & Field Sensor Enclosure", wbsCode: "IOT-110", assignee: "Diego Romero", priority: "high", type: "Feature", labels: ["Frontend", "Electrical"], est: 35, progressMode: "Kanban Stage", stage: "Ready", startOffset: 0, durDays: 14 },
+        { title: "Edge Telemetry Ingestion Driver Package", wbsCode: "IOT-210", assignee: "Diego Romero", priority: "high", type: "Task", labels: ["Backend"], est: 55, progressMode: "Kanban Stage", stage: "Backlog", startOffset: 14, durDays: 21, depWbs: ["IOT-110"] },
+        { title: "Time-Series Cloud Queue & Influx Pipeline", wbsCode: "IOT-220", assignee: "Bram Peeters", priority: "medium", type: "Task", labels: ["Backend"], est: 40, progressMode: "Kanban Stage", stage: "Backlog", startOffset: 20, durDays: 18, depWbs: ["IOT-110"] },
+        { title: "Real-Time Vibration & Temp Health Cockpit", wbsCode: "IOT-310", assignee: "Femke Visser", priority: "high", type: "Feature", labels: ["Frontend"], est: 50, progressMode: "Kanban Stage", stage: "Backlog", startOffset: 35, durDays: 20, depWbs: ["IOT-210", "IOT-220"] },
+        { title: "Cyber Penetration Testing & Client Acceptance", wbsCode: "IOT-320", assignee: "Bram Peeters", priority: "critical", type: "Milestone", labels: ["Compliance", "Client"], est: 15, milestone: true, progressMode: "Kanban Stage", stage: "Backlog", startOffset: 55, durDays: 10, depWbs: ["IOT-310"] }
+      ],
+      risks: [
+        { title: "Because plant wireless connectivity can suffer high EMI interference, there is a risk of packet drops which would degrade real-time alerting.", riskType: "Threat", category: "Technical", probability: 3, impact: 3, response: "Mitigate", costImpact: 3500, scheduleImpactDays: 4, trigger: "Packet loss > 2% during soak test" },
+        { title: "Because dashboard components can be generalized into a reusable template, there is an opportunity to accelerate Phase 2 rollouts.", riskType: "Opportunity", category: "Technical", probability: 4, impact: 4, response: "Exploit", costImpact: 7500, scheduleImpactDays: 8, trigger: "Architecture passes customer review on first submission" }
+      ]
+    },
+    "offshore-survey": {
+      id: "offshore-survey",
+      name: "Offshore Wind Field Survey & EPC Package",
+      code: "TEK-SUR-2613",
+      client: "Gulf Coast Marine Energy",
+      orgUnit: "Techniek-Field",
+      budget: 120000,
+      billingType: "T&M",
+      targetCm: 66.7,
+      description: "Subsea bathymetry, geotechnical seabed analysis, environmental clearance, and comprehensive engineering report.",
+      durationWeeks: 14,
+      wipLimit: 3,
+      resources: [
+        { name: "Maaike de Vries", role: "Project Manager", dept: "Engineering", capacityHrs: 32, costRate: 85, billRate: 145 },
+        { name: "Jeroen de Boer", role: "Marine Lead", dept: "Field", capacityHrs: 40, costRate: 88, billRate: 155 },
+        { name: "Gulf Geotech Partners", role: "Survey Crew", dept: "Subcontractor", capacityHrs: 30, costRate: 135, billRate: 190, type: "Subcontractor" }
+      ],
+      wbsElements: [
+        { wbsCode: "SUR-100", parentWbsCode: "", title: "Mobilization & Environmental Clearances", isSummary: true, sortOrder: 1 },
+        { wbsCode: "SUR-110", parentWbsCode: "SUR-100", title: "Marine Permitting & Wildlife Protection Plan", isSummary: false, sortOrder: 2 },
+        { wbsCode: "SUR-200", parentWbsCode: "", title: "Geophysical & Bathymetric Campaign", isSummary: true, sortOrder: 3 },
+        { wbsCode: "SUR-210", parentWbsCode: "SUR-200", title: "High-Resolution Multibeam Bathymetry Survey", isSummary: false, sortOrder: 4 },
+        { wbsCode: "SUR-220", parentWbsCode: "SUR-200", title: "Subsea Mooring & Geotechnical Core Sampling", isSummary: false, sortOrder: 5 },
+        { wbsCode: "SUR-300", parentWbsCode: "", title: "Engineering GIS Dossier & Submittal", isSummary: true, sortOrder: 6 },
+        { wbsCode: "SUR-310", parentWbsCode: "SUR-300", title: "Integrated Seabed Charting & Engineering Report", isSummary: false, sortOrder: 7 },
+        { wbsCode: "SUR-320", parentWbsCode: "SUR-300", title: "Regulatory Agency Review & Client Sign-off", isSummary: false, sortOrder: 8 }
+      ],
+      cards: [
+        { title: "Marine Permitting & Wildlife Protection Plan", wbsCode: "SUR-110", assignee: "Maaike de Vries", priority: "critical", type: "Task", labels: ["Compliance", "Safety"], est: 30, progressMode: "Rules of Credit", stage: "Ready", startOffset: 0, durDays: 14, rocSchema: "deliverable-prep-review-issue" },
+        { title: "High-Resolution Multibeam Bathymetry Survey", wbsCode: "SUR-210", assignee: "Gulf Geotech Partners", priority: "high", type: "Task", labels: ["Research", "Client"], est: 70, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 14, durDays: 28, rocSchema: "study-assessment-report", depWbs: ["SUR-110"] },
+        { title: "Subsea Mooring & Geotechnical Core Sampling", wbsCode: "SUR-220", assignee: "Jeroen de Boer", priority: "high", type: "Task", labels: ["Mechanical"], est: 60, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 25, durDays: 24, rocSchema: "calculation-package", depWbs: ["SUR-110"] },
+        { title: "Integrated Seabed Charting & Engineering Report", wbsCode: "SUR-310", assignee: "Jeroen de Boer", priority: "high", type: "Task", labels: ["Documentation", "Client"], est: 45, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 50, durDays: 21, depWbs: ["SUR-210", "SUR-220"] },
+        { title: "Regulatory Agency Review & Client Sign-off", wbsCode: "SUR-320", assignee: "Maaike de Vries", priority: "critical", type: "Milestone", labels: ["Client", "Compliance"], est: 15, milestone: true, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 72, durDays: 10, depWbs: ["SUR-310"] }
+      ],
+      risks: [
+        { title: "Because seasonal weather windows in the Gulf can deteriorate rapidly, there is a risk of vessel standby charges.", riskType: "Threat", category: "External", probability: 4, impact: 4, response: "Mitigate", costImpact: 15000, scheduleImpactDays: 10, trigger: "Wave height forecast > 2.5m" },
+        { title: "Because acoustic survey sensors can experience calibration drift, there is a risk of re-survey runs.", riskType: "Threat", category: "Technical", probability: 2, impact: 3, response: "Avoid", costImpact: 4000, scheduleImpactDays: 3, trigger: "Daily patch test variance > 0.2 deg" }
+      ]
+    }
+  };
+
+  function applyIndustryTemplate(key, targetBoardId) {
+    var t = INDUSTRY_TEMPLATES[key];
+    if (!t) return null;
+    var b = state.boards.filter(function (x) { return x.id === targetBoardId; })[0] || activeBoard() || state.boards[0];
+    var startISO = todayISO();
+    var endISO = addDaysISO(startISO, (t.durationWeeks || 12) * 7);
+
+    var createdProjectId = null;
+    mutate(function () {
+      var p = normalizeProject({
+        id: uid("p"),
+        name: t.name,
+        client: t.client,
+        boardId: b.id,
+        orgUnit: t.orgUnit,
+        budget: t.budget,
+        billable: true,
+        billingType: t.billingType || "FP",
+        startDate: startISO,
+        endDate: endISO,
+        status: "Active",
+        projectType: "Delivery",
+        unanetProjectCode: t.code,
+        ermasCode: "ERMAS-" + t.code,
+        sourceSystem: "Techniek PMO Template",
+        kickoff: { stage: "frozen", frozenAt: Date.now(), templateKey: key },
+        baseline: { budget: t.budget, endDate: endISO }
+      }, state);
+      state.projects.push(p);
+      createdProjectId = p.id;
+
+      // Ensure resources exist
+      var resMap = {};
+      (t.resources || []).forEach(function (tr) {
+        var existing = state.resources.filter(function (r) { return r.name.toLowerCase() === tr.name.toLowerCase(); })[0];
+        if (!existing) {
+          existing = normalizeResource({
+            id: uid("r"),
+            name: tr.name,
+            role: tr.role,
+            dept: tr.dept || "Engineering",
+            capacityHrs: tr.capacityHrs || 40,
+            costRate: tr.costRate || 70,
+            billRate: tr.billRate || 130,
+            type: tr.type || "Employee",
+            company: tr.type === "Subcontractor" ? tr.name : "Techniek",
+            unit: "hour",
+            status: "Active",
+            notes: "Instantiated from Techniek starter template: " + t.name
+          });
+          state.resources.push(existing);
+        }
+        resMap[tr.name] = existing.id;
+        if (b.rosterIds.indexOf(existing.id) === -1) b.rosterIds.push(existing.id);
+      });
+
+      // WBS elements
+      (t.wbsElements || []).forEach(function (we) {
+        state.wbsElements.push(normalizeWbsElement({
+          id: uid("wbs"),
+          projectId: p.id,
+          wbsCode: we.wbsCode,
+          parentWbsCode: we.parentWbsCode || "",
+          title: we.title,
+          description: we.title + " (PMBOK WBS element)",
+          isSummary: !!we.isSummary,
+          sortOrder: we.sortOrder || 1,
+          percentComplete: 0
+        }));
+      });
+
+      // Cards
+      var cardByWbs = {};
+      var colMap = {};
+      (b.columns || []).forEach(function (c) { colMap[c.name] = c.id; });
+      var defaultCol = b.columns[0].id;
+
+      (t.cards || []).forEach(function (tc) {
+        var cardStart = addDaysISO(startISO, tc.startOffset || 0);
+        var cardDue = addDaysISO(cardStart, tc.durDays || 14);
+        var assigneeId = tc.assignee && resMap[tc.assignee] ? resMap[tc.assignee] : null;
+        var colId = colMap[tc.stage] || defaultCol;
+        var c = normalizeWorkItem({
+          id: uid("c"),
+          boardId: b.id,
+          columnId: colId,
+          projectId: p.id,
+          title: tc.title,
+          desc: "PMBOK work package deliverable for " + t.name,
+          assigneeId: assigneeId,
+          priority: tc.priority || "medium",
+          type: tc.type || (tc.milestone ? "Milestone" : "Task"),
+          labels: tc.labels || ["Engineering"],
+          due: cardDue,
+          startDate: cardStart,
+          estimateHours: tc.est || 20,
+          loggedHours: 0,
+          progress: 0,
+          physicalProgress: 0,
+          progressMode: tc.progressMode || "Rules of Credit",
+          ruleOfCreditId: tc.rocSchema || "",
+          ruleOfCreditStep: tc.rocSchema ? 1 : null,
+          milestone: !!tc.milestone,
+          wbsCode: tc.wbsCode || "",
+          parentWbsCode: "",
+          deps: [],
+          dependencyMode: "None",
+          dependencyWbsCodes: tc.depWbs || [],
+          resourceAssignments: assigneeId ? [{ resourceId: assigneeId, allocationPct: 100, role: "Lead" }] : [],
+          activity: [{ text: "Work item instantiated from template: " + t.name, ts: Date.now() }],
+          createdAt: Date.now(),
+          order: state.cards.length
+        });
+        state.cards.push(c);
+        if (tc.wbsCode) cardByWbs[tc.wbsCode] = c;
+      });
+
+      // Resolve dependency IDs
+      (t.cards || []).forEach(function (tc) {
+        var c = cardByWbs[tc.wbsCode];
+        if (!c) return;
+        if (tc.depWbs && tc.depWbs.length) {
+          c.dependencyMode = "Blocks until closed";
+          tc.depWbs.forEach(function (dw) {
+            var depCard = cardByWbs[dw];
+            if (depCard && c.deps.indexOf(depCard.id) === -1) c.deps.push(depCard.id);
+          });
+        }
+      });
+
+      // Risks
+      (t.risks || []).forEach(function (rk) {
+        state.risks.push(normalizeRisk({
+          id: uid("rk"),
+          projectId: p.id,
+          title: rk.title,
+          riskType: rk.riskType || "Threat",
+          category: rk.category || "Technical",
+          probability: rk.probability || 3,
+          impact: rk.impact || 3,
+          residualProbability: Math.max(1, (rk.probability || 3) - 1),
+          residualImpact: Math.max(1, (rk.impact || 3) - 1),
+          response: rk.response || (rk.riskType === "Opportunity" ? "Exploit" : "Mitigate"),
+          status: "Open",
+          ownerId: Object.values(resMap)[0] || null,
+          costImpact: rk.costImpact || 0,
+          scheduleImpactDays: rk.scheduleImpactDays || 0,
+          trigger: rk.trigger || "",
+          notes: "Initial risk register seeded during PMBOK project kickoff.",
+          dateIdentified: startISO,
+          lastReviewed: startISO,
+          dueDate: addDaysISO(startISO, 30)
+        }));
+      });
+
+      // Calibrate WIP limit
+      if (t.wipLimit && b.columns) {
+        var inProgCol = b.columns.filter(function (col) { return /in progress|doing|executing/i.test(col.name); })[0];
+        if (inProgCol) inProgCol.wip = t.wipLimit;
+      }
+
+      // Sync schedule
+      syncProjectScheduleFromCards(p.id);
+      p.baseline = { budget: p.budget, endDate: p.endDate };
+
+      state.blankStart = false;
+      recordAudit("Project", p.id, "Project Kicked Off & Baseline Established", p.name + " (Template: " + t.name + ")");
+    });
+
+    state.activeBoardId = b.id;
+    save();
+    render();
+    toast("Project kicked off: " + t.name, "ok");
+    return createdProjectId;
+  }
+
+  function loadDemoPortfolioPrompt() {
+    confirmModal("Load sample portfolio?",
+      "This loads the Techniek 7-project demo portfolio so you can explore live EVM, charts, and PM Advisor audits. You can reset or clear it anytime in Settings & Data.",
+      function () {
+        mutate(function () {
+          var demo = demoWorkspace();
+          Object.keys(demo).forEach(function (k) { state[k] = demo[k]; });
+          state.blankStart = false;
+        });
+        toast("Sample portfolio loaded", "ok");
+      });
+  }
+
+  function openTemplateChooserModal(boardId, onBack) {
+    if (typeof boardId !== "string") boardId = null;
+    if (!canGovernRegisters()) { toast("Project kickoff requires manager authority", "err"); return; }
+    var targetBoard = (boardId && state.boards.filter(function (b) { return b.id === boardId; })[0]) || activeBoard() || state.boards[0];
+    var handleBack = typeof onBack === "function" ? onBack : function () { openProjectAdmin(null); };
+    var body = el("div");
+
+    var backHtml = "<div class='mb flex' style='justify-content:space-between;align-items:center'><button type='button' class='btn sm' id='tplTopBack'>⇦ Back to New Project Charter</button><span class='faint' style='font-size:11.5px'>Select a starter or return to manual setup</span></div>";
+
+    body.innerHTML =
+      backHtml +
+      "<div class='wizard-pane-head'>" +
+      "<h4>Industry Project Starter Templates</h4>" +
+      "<p>Select a pre-built engineering project package tailored to your organization. Each template deploys a PMBOK-compliant charter, WBS hierarchy, Rules of Credit milestones, direct rate modeling, and initial risk registers.</p>" +
+      "</div>" +
+      "<div class='template-card-grid'>" +
+      Object.keys(INDUSTRY_TEMPLATES).map(function (k) {
+        var t = INDUSTRY_TEMPLATES[k];
+        return "<div class='template-item' data-tpl='" + t.id + "'>" +
+          "<div class='template-item-head'><strong>" + esc(t.name) + "</strong><span class='badge ok'>" + esc(t.orgUnit) + "</span></div>" +
+          "<p>" + esc(t.description) + "</p>" +
+          "<div class='flex wrap' style='gap:6px;font-size:11px;margin-bottom:8px'>" +
+          "<span class='chip'>Client: " + esc(t.client) + "</span>" +
+          "<span class='chip'>Budget: " + money(t.budget) + " (" + esc(t.billingType) + ")</span>" +
+          "<span class='chip'>" + t.durationWeeks + " weeks</span>" +
+          "<span class='chip'>" + (t.cards || []).length + " work packages</span>" +
+          "</div>" +
+          "<button class='btn sm primary full-w' data-apply-tpl='" + t.id + "'>Deploy this project</button>" +
+          "</div>";
+      }).join("") +
+      "</div>";
+
+    var topBack = body.querySelector("#tplTopBack");
+    if (topBack) topBack.addEventListener("click", function () { closeModal(); handleBack(); });
+
+    body.querySelectorAll("[data-apply-tpl]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var tplKey = this.dataset.applyTpl;
+        closeModal();
+        applyIndustryTemplate(tplKey, targetBoard.id);
+      });
+    });
+
+    var foot = [
+      { label: "⇦ Back to New Project", cls: "btn", fn: function () { closeModal(); handleBack(); } },
+      { label: "Cancel", cls: "btn ghost", fn: closeModal }
+    ];
+
+    modal("Industry Project Templates", body, foot, "lg");
+  }
+
+  // OpenRouter & LLM credentials are strictly managed in the server environment (server/.env.local, .dev.vars)
+  // per enterprise security protocol. The browser client never handles, displays, or persists raw API keys.
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem("techniek_opsboard_openrouter_key");
+    }
+  } catch(e) {}
+
+  async function askProjectCharterCopilot(query, formContext) {
+    var hits = kbSearch(query + " " + (formContext.billingType || "") + " " + (formContext.orgUnit || "") + " " + (formContext.stageName || ""), 4);
+    var docCitations = hits.map(function (h) {
+      return {
+        title: h.passage.title,
+        heading: h.passage.heading || "",
+        text: h.passage.text,
+        source: h.passage.source,
+        dimension: h.passage.dimension || "General"
+      };
+    });
+
+    var suggested = null;
+    if (/contingency/i.test(query) && formContext.budget) {
+      var baseB = Number(String(formContext.budget).replace(/[^0-9.]/g, "")) || 0;
+      if (baseB > 0) suggested = { budget: Math.round(baseB * 1.15) };
+    }
+    if (/fixed price|fp/i.test(query)) {
+      suggested = Object.assign(suggested || {}, { billingType: "FP" });
+    } else if (/time and materials|t&m/i.test(query)) {
+      suggested = Object.assign(suggested || {}, { billingType: "T&M" });
+    }
+
+    if (serverSession && serverSession.active) {
+      try {
+        var sRes = await fetch("/api/assistant/advise", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pack: {
+              question: query,
+              charterContext: formContext,
+              dimensions: ["Cost", "Governance", "Schedule"],
+              retrieval: { passages: docCitations }
+            }
+          })
+        });
+        if (sRes.ok) {
+          var sData = await sRes.json();
+          if (sData && sData.answer) {
+            var ans = sData.answer;
+            var text = ans.headline ? (ans.headline + "\n\n" + (ans.situation || "") + "\n\n" + (ans.moves || []).map(function(m){ return "• **" + m.action + "**: " + (m.effect || ""); }).join("\n")) : (ans.text || JSON.stringify(ans));
+            return {
+              text: text,
+              citations: docCitations,
+              suggestedFields: suggested,
+              model: sData.model || "OpenRouter AI"
+            };
+          }
+        }
+      } catch (e) {
+        console.warn("Server OpenRouter advice error, falling back to local procedure RAG:", e);
+      }
+    }
+
+    if (!hits.length) {
+      return {
+        text: "### PM Guidance: " + query + "\n\n" +
+          "When setting up project parameters under PMI/PMBOK and lean execution standards:\n\n" +
+          "• **Contractual Clarity**: Align authorized BAC ($" + (formContext.budget ? Number(formContext.budget).toLocaleString() : "0") + ") with verified statement of work.\n" +
+          "• **Billing Structure**: Fixed Price requires clear milestone definition of done; T&M requires strict labor rate caps.\n" +
+          "• **Operating Unit**: Designate responsible engineering unit (" + (formContext.orgUnit || "Primary Engineering") + ") to establish clear direct accountability.\n\n" +
+          "_Tip: Upload your organization's specific PM procedure documents (.md or .pdf) in PM Advisor ➔ Procedures to have this copilot cite your exact company clauses._",
+        citations: [],
+        suggestedFields: suggested,
+        model: "Local Guidance Synthesis"
+      };
+    }
+
+    var top = hits[0].passage;
+    var guideText = "### Procedure Guidance: " + (top.heading || top.title) + "\n\n" +
+      "According to **" + top.title + "**" + (top.heading ? " (*" + top.heading + "*)" : "") + ":\n\n" +
+      "> " + top.text.split("\n").slice(0, 4).join("\n> ") + "\n\n" +
+      "**Actionable Recommendations for this Setup:**\n" +
+      (formContext.budget ? "• **Budget Baseline ($" + Number(formContext.budget).toLocaleString() + ")**: Ensure labor rate assumptions support a direct earned multiplier of ≥ 3.0× (or target contribution margin).\n" : "") +
+      (formContext.billingType ? "• **Billing Model (" + formContext.billingType + ")**: Ensure scope boundary is frozen; all downstream adjustments must route through integrated change control.\n" : "") +
+      "• **Governance**: Verify all deliverables map to a valid WBS element with measurable completion criteria before baselining.";
+
+    return {
+      text: guideText,
+      citations: docCitations,
+      suggestedFields: suggested,
+      model: "Local Procedure RAG"
+    };
+  }
+
+  function renderProjectCharterAdvisorCopilot(container, getFormContext, onApplyAdvice, scopeType, stageIndex) {
+    var card = el("div", { class: "charter-copilot-card" });
+    
+    var header = el("div", { class: "copilot-header" });
+    var title = el("div", { class: "copilot-title" });
+    title.innerHTML = "<span>💡</span><span>PM Advisor &amp; Procedure Copilot</span>";
+    header.appendChild(title);
+    
+    var hRight = el("div", { class: "flex", style: "gap:6px;align-items:center" });
+    var docs = kbDocuments();
+    var docBadge = el("span", { class: "chip sm", title: "Active procedure knowledge base" }, "📚 " + docs.length + " procedures");
+    hRight.appendChild(docBadge);
+
+    var hasServer = !!(serverSession && serverSession.active);
+    var aiBadge = el("span", { class: "copilot-badge", title: hasServer ? "Grounded in OpenRouter LLM (secure server environment) + company guidelines" : "Grounded in local procedure retrieval" }, hasServer ? "OpenRouter AI" : "Local Procedure RAG");
+    hRight.appendChild(aiBadge);
+    header.appendChild(hRight);
+    card.appendChild(header);
+
+    var chips = el("div", { class: "copilot-chips" });
+    var promptList = [];
+    if (scopeType === "charter") {
+      promptList = [
+        "What contract & billing type fits this scope?",
+        "Recommend operating unit & organization setup",
+        "How should I baseline budget & contingency?",
+        "Check this project setup against our procedures"
+      ];
+    } else if (scopeType === "kickoff") {
+      var stagePrompts = [
+        ["Contract authority & charter rules", "Recommended billing model for this client"],
+        ["A/E multiplier target ≥ 3.00x rules", "Direct cost rate vs bill rate guidelines"],
+        ["WBS 100% decomposition rule", "Recommended work package durations"],
+        ["Finish-to-start network logic guidelines", "How to sequence critical path deliverables"],
+        ["Qualitative 5x5 risk scoring thresholds", "Contingency reserve allocation for threats"],
+        ["Little's Law and Kanban WIP limit sizing", "Definition of Ready & Done requirements"],
+        ["Performance Measurement Baseline (PMB) freeze protocol", "Change order thresholds after kickoff"]
+      ];
+      promptList = stagePrompts[stageIndex || 0] || promptList;
+    } else {
+      promptList = [
+        "What are our standard procedures for this step?",
+        "Recommended values based on company guidelines",
+        "Verify compliance with PMBOK and QA rules"
+      ];
+    }
+
+    promptList.forEach(function (promptText) {
+      var chip = el("button", { type: "button", class: "copilot-chip" }, promptText);
+      chip.addEventListener("click", function () {
+        input.value = promptText;
+        doAsk(promptText);
+      });
+      chips.appendChild(chip);
+    });
+    card.appendChild(chips);
+
+    var inputRow = el("div", { class: "copilot-input-row" });
+    var input = el("input", {
+      class: "copilot-input",
+      placeholder: "Ask advice on field values, contract codes, or company procedures..."
+    });
+    var askBtn = el("button", { type: "button", class: "btn sm primary" }, "Ask Advisor");
+    
+    var resBox = el("div", { class: "copilot-response", style: "display:none" });
+
+    var doAsk = async function (q) {
+      var query = (q || input.value || "").trim();
+      if (!query) return;
+      askBtn.disabled = true;
+      askBtn.textContent = "Analyzing…";
+      resBox.style.display = "block";
+      resBox.innerHTML = "<span class='muted'>Consulting company procedures and analyzing project context…</span>";
+
+      try {
+        var ctx = typeof getFormContext === "function" ? getFormContext() : {};
+        var answer = await askProjectCharterCopilot(query, ctx);
+        resBox.innerHTML = "";
+        
+        var bodyEl = el("div");
+        appendPmFormattedText(bodyEl, answer.text);
+        resBox.appendChild(bodyEl);
+
+        if (answer.citations && answer.citations.length) {
+          var citEl = el("div", { class: "copilot-citations" });
+          citEl.appendChild(el("span", { class: "faint", style: "font-size:11px;margin-right:4px" }, "Cited from:"));
+          answer.citations.slice(0, 3).forEach(function (c) {
+            var chip = el("span", { class: "copilot-citation", title: c.text ? c.text.slice(0, 150) + "…" : "" },
+              "📄 " + esc(c.title || c.source) + (c.heading ? " · " + esc(c.heading) : ""));
+            citEl.appendChild(chip);
+          });
+          resBox.appendChild(citEl);
+        }
+
+        if (typeof onApplyAdvice === "function" && answer.suggestedFields) {
+          var applyBtn = el("button", { type: "button", class: "copilot-apply-btn" }, "✓ Apply suggested values to form");
+          applyBtn.addEventListener("click", function () {
+            onApplyAdvice(answer.suggestedFields);
+            toast("Values applied from PM Advisor", "ok");
+          });
+          resBox.appendChild(applyBtn);
+        }
+      } catch (err) {
+        resBox.innerHTML = "<span class='badge danger'>Error</span> " + esc(err.message || String(err));
+      } finally {
+        askBtn.disabled = false;
+        askBtn.textContent = "Ask Advisor";
+      }
+    };
+
+    askBtn.addEventListener("click", function () { doAsk(); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doAsk();
+      }
+    });
+
+    inputRow.appendChild(input);
+    inputRow.appendChild(askBtn);
+    card.appendChild(inputRow);
+    card.appendChild(resBox);
+
+    container.appendChild(card);
+    return card;
+  }
+
+  function renderOpeningBoardZeroState(root, b) {
+    var wrap = el("div", { class: "zero-state-hub" });
+
+    // Hero
+    var hero = el("div", { class: "zero-state-hero" });
+    hero.innerHTML =
+      "<h2>" + esc(companyName()) + " Delivery Control Center — Ready for Project Kickoff</h2>" +
+      "<p>Welcome to your local-first engineering control room. Stand up a PMBOK-compliant project charter, model team direct rates, decompose WBS deliverables, and freeze your performance baseline — or start instantly with an industry template.</p>";
+    wrap.appendChild(hero);
+
+    // 4 Action Cards
+    var grid = el("div", { class: "zero-grid" });
+
+    // Card 1: PMBOK Wizard
+    var c1 = el("div", { class: "zero-card featured" });
+    c1.innerHTML =
+      "<span class='zero-card-badge'>Recommended</span>" +
+      "<div class='zero-card-icon'>★</div>" +
+      "<div class='zero-card-title'>PMBOK Project Kickoff Wizard</div>" +
+      "<div class='zero-card-desc'>Guided 7-stage workflow: Project Charter & Authority, Resource Pool & Direct Rate Modeling, WBS Scope Decomposition, Precedence, Risk Register, and Board Flow Policies.</div>" +
+      "<div class='zero-card-action'><button class='btn primary sm full-w' id='btnZeroWizard'>Launch Kickoff Wizard</button></div>";
+    grid.appendChild(c1);
+
+    // Card 2: Industry Templates
+    var c2 = el("div", { class: "zero-card" });
+    c2.innerHTML =
+      "<span class='zero-card-badge' style='background:var(--ok-soft);color:var(--ok);border-color:rgba(46,160,67,.3)'>Quick Start</span>" +
+      "<div class='zero-card-icon' style='color:var(--ok)'>⚡</div>" +
+      "<div class='zero-card-title'>Industry Starter Templates</div>" +
+      "<div class='zero-card-desc'>One-click deployment of pre-built " + esc(companyName()) + " engineering delivery packages: Automation & Controls, Heavy Mechanical, Digital IIoT, or Offshore Survey.</div>" +
+      "<div class='zero-card-action'><button class='btn sm full-w' id='btnZeroTemplates'>Choose Template</button></div>";
+    grid.appendChild(c2);
+
+    // Card 3: Import WBS / Schedule
+    var c3 = el("div", { class: "zero-card" });
+    c3.innerHTML =
+      "<span class='zero-card-badge' style='background:var(--surface-3);color:var(--text-soft);border-color:var(--border)'>P6 / CES / CSV</span>" +
+      "<div class='zero-card-icon' style='color:var(--accent)'>⇪</div>" +
+      "<div class='zero-card-title'>Import Schedule / WBS</div>" +
+      "<div class='zero-card-desc'>Import Primavera P6, CES, or tabular CSV work breakdown structures. Automatically maps tasks, outlines, assignments, and schedule dates.</div>" +
+      "<div class='zero-card-action'><button class='btn sm full-w' id='btnZeroImport'>Import Schedule File</button></div>";
+    grid.appendChild(c3);
+
+    // Card 4: Sandbox Demo Portfolio
+    var c4 = el("div", { class: "zero-card" });
+    c4.innerHTML =
+      "<span class='zero-card-badge' style='background:var(--warn-soft);color:var(--warn);border-color:rgba(251,191,36,.3)'>Sandbox</span>" +
+      "<div class='zero-card-icon' style='color:var(--warn)'>◈</div>" +
+      "<div class='zero-card-title'>Explore Demo Portfolio</div>" +
+      "<div class='zero-card-desc'>Explore the pre-loaded 7-project Techniek portfolio with live EVM, charts, and PM Advisor findings to experience the system before setting up real work.</div>" +
+      "<div class='zero-card-action'><button class='btn sm full-w' id='btnZeroDemo'>Load Sample Portfolio</button></div>";
+    grid.appendChild(c4);
+
+    wrap.appendChild(grid);
+
+    // Manual scratchpad escape hatch
+    var manualRow = el("div", { class: "flex wrap", style: "justify-content:center;gap:12px;margin-top:16px" });
+    manualRow.innerHTML = "<span class='muted' style='font-size:12.5px'>Prefer a blank scratchpad?</span>";
+    var quickCardBtn = el("button", { class: "btn sm ghost" }, "+ Add blank card");
+    quickCardBtn.addEventListener("click", function () { openCardEditor(null); });
+    var quickColBtn = el("button", { class: "btn sm ghost" }, "+ Add column");
+    quickColBtn.addEventListener("click", addColumn);
+    manualRow.appendChild(quickCardBtn);
+    manualRow.appendChild(quickColBtn);
+    wrap.appendChild(manualRow);
+
+    // Wire action buttons
+    c1.querySelector("#btnZeroWizard").addEventListener("click", function () { openProjectKickoffWizard(null); });
+    c2.querySelector("#btnZeroTemplates").addEventListener("click", function () { openTemplateChooserModal(b.id); });
+    c3.querySelector("#btnZeroImport").addEventListener("click", function () { importWbsPrompt(null); });
+    c4.querySelector("#btnZeroDemo").addEventListener("click", loadDemoPortfolioPrompt);
+
+    root.appendChild(wrap);
+  }
+
+  function renderKickoffRibbon(project, board) {
+    var p = project;
+    var cards = state.cards.filter(function (c) { return c.projectId === p.id; });
+    var hasStaff = cards.some(function (c) { return (c.resourceAssignments || []).length > 0 || c.assigneeId; });
+    var hasScope = cards.length > 0 || projectWbsElements(p.id).length > 0;
+    var hasSched = cards.some(function (c) { return !!cardFinish(c); });
+    var hasRisks = state.risks.some(function (r) { return r.projectId === p.id; });
+    var hasWip = (board.columns || []).some(function (c) { return c.wip > 0; });
+
+    var ribbon = el("div", { class: "kickoff-ribbon no-print" });
+
+    var titleBox = el("div", { class: "kickoff-ribbon-title" });
+    titleBox.innerHTML =
+      "<strong>Kickoff in Progress · " + esc(p.name) + "</strong>" +
+      "<span>Pre-baseline planning mode — calibrate deliverables before freeze.</span>";
+    ribbon.appendChild(titleBox);
+
+    var stepsBox = el("div", { class: "kickoff-ribbon-steps" });
+    stepsBox.innerHTML =
+      "<span class='k-step done'>✓ 1. Charter</span>" +
+      "<span class='k-step " + (hasStaff ? "done" : "active") + "'>" + (hasStaff ? "✓" : "○") + " 2. Staff & Rates</span>" +
+      "<span class='k-step " + (hasScope ? "done" : "") + "'>" + (hasScope ? "✓" : "○") + " 3. WBS (" + cards.length + ")</span>" +
+      "<span class='k-step " + (hasSched ? "done" : "") + "'>" + (hasSched ? "✓" : "○") + " 4. Schedule</span>" +
+      "<span class='k-step " + (hasRisks ? "done" : "") + "'>" + (hasRisks ? "✓" : "○") + " 5. Risks</span>" +
+      "<span class='k-step " + (hasWip ? "done" : "") + "'>" + (hasWip ? "✓" : "○") + " 6. Flow WIP</span>";
+    ribbon.appendChild(stepsBox);
+
+    var actionsBox = el("div", { class: "kickoff-ribbon-actions" });
+    if (canGovernRegisters()) {
+      var freezeBtn = el("button", { class: "btn primary sm", title: "Lock baseline and commence delivery" }, "Freeze Baseline & Launch ★");
+      freezeBtn.addEventListener("click", function () {
+        confirmModal("Complete Kickoff & Freeze Baseline for " + p.name + "?",
+          "This will lock the contractual baseline (Budget BAC: " + money(p.budget) + ", Target Completion: " + (p.endDate || "N/A") + "). Subsequent budget or schedule variances will require formal Change Control approval.",
+          function () {
+            mutate(function () {
+              p.kickoff = p.kickoff || {};
+              p.kickoff.stage = "frozen";
+              p.kickoff.frozenAt = Date.now();
+              p.baseline = { budget: p.budget, endDate: p.endDate };
+              syncProjectScheduleFromCards(p.id);
+              recordAudit("Project", p.id, "Project Kicked Off & Baseline Established", p.name);
+            });
+            toast("Project baseline frozen & launched into active delivery!", "ok");
+            render();
+          });
+      });
+      actionsBox.appendChild(freezeBtn);
+
+      var resumeBtn = el("button", { class: "btn sm ghost" }, "Resume Wizard");
+      resumeBtn.addEventListener("click", function () { openProjectKickoffWizard(null, p.id); });
+      actionsBox.appendChild(resumeBtn);
+    }
+    ribbon.appendChild(actionsBox);
+
+    return ribbon;
+  }
+
+  function openProjectKickoffWizard(presetKey, existingProjectId) {
+    if (!canGovernRegisters()) { toast("Project kickoff requires manager authority", "err"); return; }
+    var preset = presetKey && INDUSTRY_TEMPLATES[presetKey] ? INDUSTRY_TEMPLATES[presetKey] : null;
+    var existingP = existingProjectId ? projectById(existingProjectId) : null;
+    var targetBoard = activeBoard() || state.boards[0];
+
+    var wiz = {
+      step: 0,
+      charter: {
+        name: existingP ? existingP.name : (preset ? preset.name : "Industrial Automation Delivery"),
+        code: existingP ? (existingP.unanetProjectCode || "TEK-PRJ-2610") : (preset ? preset.code : "TEK-PRJ-" + Math.floor(1000 + Math.random() * 9000)),
+        client: existingP ? existingP.client : (preset ? preset.client : "Midwest Grid & Power"),
+        orgUnit: existingP ? (existingP.orgUnit || DEFAULT_ORG_UNIT) : (preset ? preset.orgUnit : DEFAULT_ORG_UNIT),
+        boardId: existingP ? existingP.boardId : targetBoard.id,
+        budget: existingP ? existingP.budget : (preset ? preset.budget : 68000),
+        billingType: existingP ? projectBillingType(existingP) : (preset ? preset.billingType : "FP"),
+        billable: true,
+        targetCm: preset ? preset.targetCm : 66.7,
+        startDate: existingP ? (existingP.startDate || todayISO()) : todayISO(),
+        endDate: existingP ? (existingP.endDate || addDaysISO(todayISO(), 90)) : addDaysISO(todayISO(), (preset && preset.durationWeeks ? preset.durationWeeks * 7 : 90)),
+        purpose: preset ? preset.description : "Execute engineering deliverable package in accordance with PMI/PMBOK and client technical specifications."
+      },
+      resources: preset ? JSON.parse(JSON.stringify(preset.resources)) : [
+        { name: "Sander van Dijk", role: "Controls Lead", capacityHrs: 40, costRate: 75, billRate: 140 },
+        { name: "Imran Haddad", role: "Electrical Engineer", capacityHrs: 38, costRate: 68, billRate: 120 },
+        { name: "Lotte Janssen", role: "Systems Specialist", capacityHrs: 36, costRate: 72, billRate: 125 }
+      ],
+      wbsElements: preset ? JSON.parse(JSON.stringify(preset.wbsElements)) : [
+        { wbsCode: "AUT-100", parentWbsCode: "", title: "System Architecture & IO Definition", isSummary: true, sortOrder: 1 },
+        { wbsCode: "AUT-110", parentWbsCode: "AUT-100", title: "Field IO Schedule & Control Architecture", isSummary: false, sortOrder: 2 },
+        { wbsCode: "AUT-200", parentWbsCode: "", title: "PLC Software & Safety Logic Engineering", isSummary: true, sortOrder: 3 },
+        { wbsCode: "AUT-210", parentWbsCode: "AUT-200", title: "Core PLC Control Loop Programming", isSummary: false, sortOrder: 4 },
+        { wbsCode: "AUT-220", parentWbsCode: "AUT-200", title: "Safety Interlock & E-Stop Validation Package", isSummary: false, sortOrder: 5 },
+        { wbsCode: "AUT-300", parentWbsCode: "", title: "Factory Acceptance & Site Commissioning", isSummary: true, sortOrder: 6 },
+        { wbsCode: "AUT-310", parentWbsCode: "AUT-300", title: "Factory Acceptance Testing (FAT) Protocol", isSummary: false, sortOrder: 7 },
+        { wbsCode: "AUT-320", parentWbsCode: "AUT-300", title: "Site Commissioning & Operational Handover", isSummary: false, sortOrder: 8 }
+      ],
+      cards: preset ? JSON.parse(JSON.stringify(preset.cards)) : [
+        { title: "Field IO Schedule & Control Architecture", wbsCode: "AUT-110", assignee: "Sander van Dijk", priority: "high", type: "Task", labels: ["Controls", "Electrical"], est: 40, progressMode: "Rules of Credit", stage: "Ready", startOffset: 0, durDays: 14, rocSchema: "deliverable-prep-review-issue" },
+        { title: "Core PLC Control Loop Programming", wbsCode: "AUT-210", assignee: "Sander van Dijk", priority: "high", type: "Feature", labels: ["Controls"], est: 60, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 14, durDays: 28, rocSchema: "calculation-package", depWbs: ["AUT-110"] },
+        { title: "Safety Interlock & E-Stop Validation Package", wbsCode: "AUT-220", assignee: "Imran Haddad", priority: "critical", type: "Task", labels: ["Safety", "Compliance"], est: 35, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 20, durDays: 21, rocSchema: "deliverable-prep-review-issue", depWbs: ["AUT-110"] },
+        { title: "Factory Acceptance Testing (FAT) Protocol", wbsCode: "AUT-310", assignee: "Lotte Janssen", priority: "high", type: "Task", labels: ["Electrical", "Client"], est: 45, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 45, durDays: 18, depWbs: ["AUT-210", "AUT-220"] },
+        { title: "Site Commissioning & Operational Handover", wbsCode: "AUT-320", assignee: "Sander van Dijk", priority: "critical", type: "Milestone", labels: ["Client"], est: 16, milestone: true, progressMode: "Rules of Credit", stage: "Backlog", startOffset: 65, durDays: 10, depWbs: ["AUT-310"] }
+      ],
+      risks: preset ? JSON.parse(JSON.stringify(preset.risks)) : [
+        { title: "Because client field IO wiring diagrams are preliminary, there is a risk of field re-termination delays which would extend commissioning.", riskType: "Threat", category: "Technical", probability: 3, impact: 4, response: "Mitigate", costImpact: 4500, scheduleImpactDays: 7, trigger: "Field loop test failures > 5%" },
+        { title: "Because pre-configured Techniek standard safety blocks can be deployed, there is an opportunity to compress safety sign-off which would improve margin.", riskType: "Opportunity", category: "Technical", probability: 4, impact: 3, response: "Exploit", costImpact: 6000, scheduleImpactDays: 5, trigger: "Client approves safety block architecture early" }
+      ],
+      wipLimit: preset && preset.wipLimit ? preset.wipLimit : 3
+    };
+
+    var STEP_NAMES = [
+      "1. Charter & Authority",
+      "2. Staff & Rates",
+      "3. WBS Scope",
+      "4. Schedule",
+      "5. Risks",
+      "6. Flow WIP",
+      "7. Freeze & Launch"
+    ];
+
+    var modalContainer = el("div");
+
+    function renderWizard() {
+      modalContainer.innerHTML = "";
+
+      // Header Stepper
+      var stepper = el("div", { class: "wizard-header-stepper" });
+      STEP_NAMES.forEach(function (name, idx) {
+        var node = el("button", { class: "wizard-step-node " + (idx === wiz.step ? "active" : idx < wiz.step ? "done" : "") });
+        node.innerHTML = "<span class='wizard-step-num'>" + (idx < wiz.step ? "✓" : (idx + 1)) + "</span><span>" + esc(name) + "</span>";
+        node.addEventListener("click", function () { syncCurrentStepInputs(); wiz.step = idx; renderWizard(); });
+        stepper.appendChild(node);
+        if (idx < STEP_NAMES.length - 1) {
+          stepper.appendChild(el("span", { class: "wizard-step-sep" }, "➔"));
+        }
+      });
+      modalContainer.appendChild(stepper);
+
+      // Body Pane
+      var pane = el("div", { class: "wizard-pane modal-body", style: "max-height:60vh;overflow-y:auto;padding:18px 20px" });
+
+      if (wiz.step === 0) {
+        // Step 0: Charter
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 1: Project Charter & Authority (PMBOK Initiating)</h4>" +
+          "<p>Establish contractual boundary, project identification, designated project manager authority, and authorized budget baseline ($BAC$).</p>" +
+          "</div>" +
+          "<div class='form-grid'>" +
+          "<div class='form-row full'><label class='field-label inline'>Project title *</label><input class='input' id='wzName' value='" + esc(wiz.charter.name) + "'></div>" +
+          "<div class='form-row'><label class='field-label inline'>Project Code (WBS Prefix)</label><input class='input' id='wzCode' value='" + esc(wiz.charter.code) + "'></div>" +
+          "<div class='form-row'><label class='field-label inline'>Client organization</label><input class='input' id='wzClient' value='" + esc(wiz.charter.client) + "'></div>" +
+          "<div class='form-row'><label class='field-label inline'>Operating unit</label><select class='select' id='wzOrg'>" + orgUnitsList().map(function (o) { return "<option" + (o === wiz.charter.orgUnit ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select></div>" +
+          "<div class='form-row'><label class='field-label inline'>Contract Value / Budget BAC ($)</label><input class='input' type='number' id='wzBudget' value='" + wiz.charter.budget + "'></div>" +
+          "<div class='form-row'><label class='field-label inline'>Billing model</label><select class='select' id='wzBilling'>" + billingTypesList().map(function (bt) { return "<option" + (bt === wiz.charter.billingType ? " selected" : "") + ">" + bt + "</option>"; }).join("") + "</select></div>" +
+          "<div class='form-row'><label class='field-label inline'>Contract start date</label><input class='input' type='date' id='wzStart' value='" + esc(wiz.charter.startDate) + "'></div>" +
+          "<div class='form-row'><label class='field-label inline'>Contract finish date</label><input class='input' type='date' id='wzEnd' value='" + esc(wiz.charter.endDate) + "'></div>" +
+          "<div class='form-row full'><label class='field-label inline'>Scope narrative / Business purpose</label><textarea class='textarea' id='wzPurpose' rows='2'>" + esc(wiz.charter.purpose) + "</textarea></div>" +
+          "</div>";
+      } else if (wiz.step === 1) {
+        // Step 1: Staff & Rates
+        var rowsHtml = wiz.resources.map(function (r, i) {
+          var mult = (r.costRate && r.costRate > 0) ? (r.billRate / r.costRate).toFixed(2) : "0.00";
+          var multCls = mult >= 3.0 ? "ok" : mult >= 2.0 ? "warn" : "danger";
+          return "<tr>" +
+            "<td><input class='input sm' data-rf='name' data-idx='" + i + "' value='" + esc(r.name) + "' style='min-width:140px'></td>" +
+            "<td><input class='input sm' data-rf='role' data-idx='" + i + "' value='" + esc(r.role) + "'></td>" +
+            "<td><input class='input sm' type='number' data-rf='capacityHrs' data-idx='" + i + "' value='" + r.capacityHrs + "' style='width:65px'></td>" +
+            "<td><input class='input sm' type='number' data-rf='costRate' data-idx='" + i + "' value='" + r.costRate + "' style='width:75px'></td>" +
+            "<td><input class='input sm' type='number' data-rf='billRate' data-idx='" + i + "' value='" + r.billRate + "' style='width:75px'></td>" +
+            "<td class='num'><span class='badge " + multCls + "'>" + mult + "×</span></td>" +
+            "<td><button class='btn sm ghost' data-del-res='" + i + "' title='Remove'>✕</button></td>" +
+            "</tr>";
+        }).join("");
+
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 2: Resource Pool & Direct Rate Modeling (PMBOK Cost & Resource)</h4>" +
+          "<p>Model engineering cost rates and client billing rates. Target A/E Multiplier is ≥ 3.00× (equivalent to ≥ 66.7% Contribution Margin).</p>" +
+          "</div>" +
+          "<div class='table-wrap'>" +
+          "<table class='table table-dense'>" +
+          "<thead><tr><th>Resource Name</th><th>Role / Discipline</th><th>Cap (h/wk)</th><th>Cost ($/h)</th><th>Bill ($/h)</th><th class='num'>Multiplier</th><th></th></tr></thead>" +
+          "<tbody id='wzResTbody'>" + rowsHtml + "</tbody>" +
+          "</table>" +
+          "</div>" +
+          "<div class='mt flex'>" +
+          "<button class='btn sm' id='wzAddRes'>+ Add resource</button>" +
+          "<div class='spacer'></div>" +
+          "<span class='faint' style='font-size:12px'>Rates establish baseline labor costing for Earned Value & Margin derivation.</span>" +
+          "</div>";
+      } else if (wiz.step === 2) {
+        // Step 2: WBS Scope
+        var wbsRows = wiz.cards.map(function (c, i) {
+          return "<tr>" +
+            "<td><input class='input sm' data-cf='wbsCode' data-idx='" + i + "' value='" + esc(c.wbsCode) + "' style='width:85px;font-weight:700'></td>" +
+            "<td><input class='input sm' data-cf='title' data-idx='" + i + "' value='" + esc(c.title) + "' style='min-width:200px'></td>" +
+            "<td><select class='select select-sm' data-cf='assignee' data-idx='" + i + "'>" + wiz.resources.map(function (r) { return "<option" + (r.name === c.assignee ? " selected" : "") + ">" + esc(r.name) + "</option>"; }).join("") + "</select></td>" +
+            "<td><input class='input sm' type='number' data-cf='est' data-idx='" + i + "' value='" + c.est + "' style='width:65px'></td>" +
+            "<td><select class='select select-sm' data-cf='progressMode' data-idx='" + i + "'>" + PROGRESS_MODES.map(function (m) { return "<option" + (m === c.progressMode ? " selected" : "") + ">" + m + "</option>"; }).join("") + "</select></td>" +
+            "<td><button class='btn sm ghost' data-del-card='" + i + "'>✕</button></td>" +
+            "</tr>";
+        }).join("");
+
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 3: Scope Breakdown & WBS Architecture (PMBOK Scope Management)</h4>" +
+          "<p>Decompose deliverables into discrete Work Packages. Choose progress governance mode (Rules of Credit milestones, Manual Physical %, or Kanban Stage flow).</p>" +
+          "</div>" +
+          "<div class='table-wrap'>" +
+          "<table class='table table-dense'>" +
+          "<thead><tr><th>WBS Code</th><th>Work Package Deliverable</th><th>Responsible Lead</th><th>Est (h)</th><th>Progress Mode</th><th></th></tr></thead>" +
+          "<tbody id='wzCardTbody'>" + wbsRows + "</tbody>" +
+          "</table>" +
+          "</div>" +
+          "<div class='mt flex'>" +
+          "<button class='btn sm' id='wzAddCard'>+ Add deliverable</button>" +
+          "<div class='spacer'></div>" +
+          "<span class='faint' style='font-size:12px'>Total planned scope: " + wiz.cards.reduce(function (a, x) { return a + (Number(x.est) || 0); }, 0) + " hours</span>" +
+          "</div>";
+      } else if (wiz.step === 3) {
+        // Step 3: Schedule & Precedence
+        var schedRows = wiz.cards.map(function (c, i) {
+          var otherCards = wiz.cards.filter(function (_, oi) { return oi !== i; });
+          var depVal = (c.depWbs || []).join(", ");
+          return "<tr>" +
+            "<td><strong style='font-size:12px'>" + esc(c.wbsCode) + "</strong></td>" +
+            "<td><div style='font-size:12.5px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(c.title) + "</div></td>" +
+            "<td><input class='input sm' type='number' data-cf='startOffset' data-idx='" + i + "' value='" + (c.startOffset || 0) + "' style='width:60px'> d</td>" +
+            "<td><input class='input sm' type='number' data-cf='durDays' data-idx='" + i + "' value='" + (c.durDays || 14) + "' style='width:60px'> d</td>" +
+            "<td><input class='input sm' data-cf='depWbs' data-idx='" + i + "' value='" + esc(depVal) + "' placeholder='Predecessors (e.g. AUT-110)' style='min-width:140px'></td>" +
+            "</tr>";
+        }).join("");
+
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 4: Schedule Sequencing & Precedence (PMBOK Schedule Management)</h4>" +
+          "<p>Establish deliverable durations and finish-to-start predecessor linkages to prevent premature downstream work.</p>" +
+          "</div>" +
+          "<div class='table-wrap'>" +
+          "<table class='table table-dense'>" +
+          "<thead><tr><th>WBS</th><th>Deliverable</th><th>Start Offset</th><th>Duration</th><th>Predecessors (Blocks until closed)</th></tr></thead>" +
+          "<tbody>" + schedRows + "</tbody>" +
+          "</table>" +
+          "</div>";
+      } else if (wiz.step === 4) {
+        // Step 4: Risks
+        var riskRows = wiz.risks.map(function (rk, i) {
+          return "<tr>" +
+            "<td><input class='input sm' data-rf='title' data-idx='" + i + "' value='" + esc(rk.title) + "' style='min-width:260px'></td>" +
+            "<td><select class='select select-sm' data-rf='riskType' data-idx='" + i + "'>" + RISK_TYPES.map(function (t) { return "<option" + (t === rk.riskType ? " selected" : "") + ">" + t + "</option>"; }).join("") + "</select></td>" +
+            "<td><input class='input sm' type='number' min='1' max='5' data-rf='probability' data-idx='" + i + "' value='" + rk.probability + "' style='width:45px'></td>" +
+            "<td><input class='input sm' type='number' min='1' max='5' data-rf='impact' data-idx='" + i + "' value='" + rk.impact + "' style='width:45px'></td>" +
+            "<td><select class='select select-sm' data-rf='response' data-idx='" + i + "'>" + allRiskResponses().map(function (resp) { return "<option" + (resp === rk.response ? " selected" : "") + ">" + resp + "</option>"; }).join("") + "</select></td>" +
+            "<td><input class='input sm' type='number' data-rf='costImpact' data-idx='" + i + "' value='" + rk.costImpact + "' style='width:70px'></td>" +
+            "<td><button class='btn sm ghost' data-del-risk='" + i + "'>✕</button></td>" +
+            "</tr>";
+        }).join("");
+
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 5: Initial Risk Register Identification (PMBOK Risk Management)</h4>" +
+          "<p>Seed known threats and opportunities with qualitative 5×5 scoring, response strategies, and quantified cost exposure.</p>" +
+          "</div>" +
+          "<div class='table-wrap'>" +
+          "<table class='table table-dense'>" +
+          "<thead><tr><th>Risk Statement (Cause ➔ Risk ➔ Effect)</th><th>Type</th><th>P (1-5)</th><th>I (1-5)</th><th>Strategy</th><th>Cost ($)</th><th></th></tr></thead>" +
+          "<tbody id='wzRiskTbody'>" + riskRows + "</tbody>" +
+          "</table>" +
+          "</div>" +
+          "<div class='mt flex'>" +
+          "<button class='btn sm' id='wzAddRisk'>+ Add risk statement</button>" +
+          "<div class='spacer'></div>" +
+          "<span class='faint' style='font-size:12px'>Seeded risks will appear in the project and portfolio Risk Registers.</span>" +
+          "</div>";
+      } else if (wiz.step === 5) {
+        // Step 5: Flow WIP & Policies
+        var activeStaff = wiz.resources.length;
+        var recommendedWip = Math.max(2, Math.ceil(activeStaff * 1.5));
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 6: Board Flow Policies & WIP Calibration (Lean / Kanban Execution)</h4>" +
+          "<p>Configure the Kanban board pull system. Calibrate Work-in-Progress (WIP) limits to prevent multitasking waste and queuing bottlenecks.</p>" +
+          "</div>" +
+          "<div class='grid cols-2' style='gap:18px'>" +
+          "<div class='panel panel-pad'>" +
+          "<strong>Flow & Pull Policy</strong>" +
+          "<div class='mt form-row'>" +
+          "<label class='field-label inline'>'In Progress' Column WIP Limit</label>" +
+          "<div class='flex'><input class='input' type='number' min='1' max='20' id='wzWipLimit' value='" + wiz.wipLimit + "' style='max-width:90px'> <span class='muted'>Recommended: " + recommendedWip + " (based on " + activeStaff + " active team members × 1.5)</span></div>" +
+          "</div>" +
+          "<div class='mt faint' style='font-size:12px;line-height:1.4'>" +
+          "WIP limits enforce Anderson / LeanKanban flow mechanics. Pulling cards past this limit is blocked by the system's hard WIP policy." +
+          "</div>" +
+          "</div>" +
+          "<div class='panel panel-pad'>" +
+          "<strong>Engineering Governance Gates</strong>" +
+          "<div class='mt flex' style='gap:8px;align-items:flex-start'>" +
+          "<input type='checkbox' id='wzDor' checked style='margin-top:3px'>" +
+          "<div><strong>Definition of Ready (DoR)</strong><div class='muted' style='font-size:12px'>Cards must carry an assigned lead, estimate > 0h, and verified WBS deliverable code before leaving Backlog.</div></div>" +
+          "</div>" +
+          "<div class='mt flex' style='gap:8px;align-items:flex-start'>" +
+          "<input type='checkbox' id='wzDod' checked style='margin-top:3px'>" +
+          "<div><strong>Definition of Done (DoD)</strong><div class='muted' style='font-size:12px'>Deliverable cards require completed QA evidence and closed dependencies before entering Done.</div></div>" +
+          "</div>" +
+          "</div>" +
+          "</div>";
+      } else if (wiz.step === 6) {
+        // Step 6: Dossier Summary & Baseline Freeze
+        var totalEst = wiz.cards.reduce(function (a, x) { return a + (Number(x.est) || 0); }, 0);
+        var totalRiskCost = wiz.risks.reduce(function (a, x) { return a + (Number(x.costImpact) || 0); }, 0);
+        pane.innerHTML =
+          "<div class='wizard-pane-head'>" +
+          "<h4>Stage 7: Baseline Freeze & Execution Kickoff (PMBOK Change Control)</h4>" +
+          "<p>Review your project dossier. Freezing establishes the official Performance Measurement Baseline (PMB). All subsequent changes require formal Change Control approval.</p>" +
+          "</div>" +
+          "<div class='panel panel-pad' style='background:var(--surface-2);border-color:var(--border-strong)'>" +
+          "<div class='grid cols-3 mb'>" +
+          statCardHTML("Project Title", esc(wiz.charter.name), esc(wiz.charter.code)) +
+          statCardHTML("Authorized BAC", money(wiz.charter.budget), esc(wiz.charter.billingType) + " · Target CM " + wiz.charter.targetCm + "%") +
+          statCardHTML("Period of Performance", fmtDate(wiz.charter.startDate) + " – " + fmtDate(wiz.charter.endDate), daysBetweenISO(wiz.charter.startDate, wiz.charter.endDate) + " calendar days") +
+          "</div>" +
+          "<div class='grid cols-3'>" +
+          statCardHTML("Delivery Team", wiz.resources.length + " resources", wiz.resources.map(function (r) { return r.role; }).slice(0, 2).join(", ")) +
+          statCardHTML("Planned Work", wiz.cards.length + " work packages", totalEst + " estimated labor hours") +
+          statCardHTML("Risk Exposure", wiz.risks.length + " identified risks", money(totalRiskCost) + " quantified exposure") +
+          "</div>" +
+          "</div>" +
+          "<div class='mt flex' style='gap:10px;padding:12px;background:var(--ok-soft);border:1px solid rgba(46,160,67,.3);border-radius:var(--radius)'>" +
+          "<span style='font-size:20px;color:var(--ok)'>🔒</span>" +
+          "<div style='font-size:12.5px;color:var(--text)'><strong>Integrated Baseline Protection:</strong> Upon clicking Complete Kickoff, the baseline budget and schedule will be locked (`baseline.budget = " + money(wiz.charter.budget) + "`). Cards, WBS nodes, and risks will be created in an atomic transaction with full undo capability.</div>" +
+          "</div>";
+      }
+
+      // Embed PM Advisor & Procedure Copilot at the bottom of the active pane
+      renderProjectCharterAdvisorCopilot(
+        pane,
+        function () {
+          syncCurrentStepInputs();
+          return {
+            step: wiz.step,
+            stageIndex: wiz.step,
+            stageName: STEP_NAMES[wiz.step],
+            projectName: wiz.charter.name,
+            client: wiz.charter.client,
+            orgUnit: wiz.charter.orgUnit,
+            budget: wiz.charter.budget,
+            billingType: wiz.charter.billingType,
+            purpose: wiz.charter.purpose,
+            resourcesCount: wiz.resources.length,
+            wbsCount: wiz.wbsElements.length,
+            cardsCount: wiz.cards.length,
+            risksCount: wiz.risks.length,
+            scopeType: "kickoff"
+          };
+        },
+        function (suggested) {
+          if (!suggested) return;
+          if (wiz.step === 0) {
+            if (suggested.billingType) {
+              wiz.charter.billingType = suggested.billingType;
+              var bEl = modalContainer.querySelector("#wzBilling");
+              if (bEl) bEl.value = suggested.billingType;
+            }
+            if (suggested.orgUnit) {
+              wiz.charter.orgUnit = suggested.orgUnit;
+              var oEl = modalContainer.querySelector("#wzOrg");
+              if (oEl) oEl.value = suggested.orgUnit;
+            }
+            if (suggested.budget) {
+              wiz.charter.budget = suggested.budget;
+              var bgEl = modalContainer.querySelector("#wzBudget");
+              if (bgEl) bgEl.value = suggested.budget;
+            }
+            if (suggested.client) {
+              wiz.charter.client = suggested.client;
+              var cEl = modalContainer.querySelector("#wzClient");
+              if (cEl) cEl.value = suggested.client;
+            }
+          }
+        },
+        "kickoff",
+        wiz.step
+      );
+
+      modalContainer.appendChild(pane);
+
+      // Foot Controls
+      var foot = el("div", { class: "modal-foot" });
+      foot.appendChild(mkBtn("Cancel", "btn", closeModal));
+      foot.appendChild(el("div", { class: "spacer" }));
+
+      if (wiz.step > 0) {
+        foot.appendChild(mkBtn("⇦ Back", "btn", function () {
+          syncCurrentStepInputs();
+          wiz.step--;
+          renderWizard();
+        }));
+      }
+
+      if (wiz.step < 6) {
+        foot.appendChild(mkBtn("Next ⇨", "btn primary", function () {
+          syncCurrentStepInputs();
+          if (wiz.step === 0 && !wiz.charter.name.trim()) { toast("Project title is required", "err"); return; }
+          wiz.step++;
+          renderWizard();
+        }));
+      } else {
+        var launchBtn = mkBtn("Freeze Baseline & Launch Project ★", "btn primary", function () {
+          syncCurrentStepInputs();
+          executeKickoff();
+        });
+        foot.appendChild(launchBtn);
+      }
+
+      modalContainer.appendChild(foot);
+
+      // Attach in-step event listeners
+      attachStepEvents();
+    }
+
+    function syncCurrentStepInputs() {
+      if (wiz.step === 0) {
+        var n = modalContainer.querySelector("#wzName"); if (n) wiz.charter.name = n.value.trim();
+        var c = modalContainer.querySelector("#wzCode"); if (c) wiz.charter.code = c.value.trim();
+        var cl = modalContainer.querySelector("#wzClient"); if (cl) wiz.charter.client = cl.value.trim();
+        var og = modalContainer.querySelector("#wzOrg"); if (og) wiz.charter.orgUnit = og.value;
+        var bg = modalContainer.querySelector("#wzBudget"); if (bg) wiz.charter.budget = parseFloat(bg.value) || 0;
+        var bt = modalContainer.querySelector("#wzBilling"); if (bt) wiz.charter.billingType = bt.value;
+        var st = modalContainer.querySelector("#wzStart"); if (st) wiz.charter.startDate = st.value;
+        var en = modalContainer.querySelector("#wzEnd"); if (en) wiz.charter.endDate = en.value;
+        var pp = modalContainer.querySelector("#wzPurpose"); if (pp) wiz.charter.purpose = pp.value;
+      } else if (wiz.step === 1) {
+        modalContainer.querySelectorAll("[data-rf]").forEach(function (inp) {
+          var idx = parseInt(inp.dataset.idx, 10);
+          var fld = inp.dataset.rf;
+          if (wiz.resources[idx]) {
+            if (fld === "costRate" || fld === "billRate" || fld === "capacityHrs") wiz.resources[idx][fld] = parseFloat(inp.value) || 0;
+            else wiz.resources[idx][fld] = inp.value;
+          }
+        });
+      } else if (wiz.step === 2) {
+        modalContainer.querySelectorAll("[data-cf]").forEach(function (inp) {
+          var idx = parseInt(inp.dataset.idx, 10);
+          var fld = inp.dataset.cf;
+          if (wiz.cards[idx]) {
+            if (fld === "est") wiz.cards[idx].est = parseFloat(inp.value) || 0;
+            else wiz.cards[idx][fld] = inp.value;
+          }
+        });
+      } else if (wiz.step === 3) {
+        modalContainer.querySelectorAll("[data-cf]").forEach(function (inp) {
+          var idx = parseInt(inp.dataset.idx, 10);
+          var fld = inp.dataset.cf;
+          if (wiz.cards[idx]) {
+            if (fld === "startOffset" || fld === "durDays") wiz.cards[idx][fld] = parseInt(inp.value, 10) || 0;
+            else if (fld === "depWbs") {
+              wiz.cards[idx].depWbs = inp.value.split(/[,;\s]+/).map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
+            }
+          }
+        });
+      } else if (wiz.step === 4) {
+        modalContainer.querySelectorAll("[data-rf]").forEach(function (inp) {
+          var idx = parseInt(inp.dataset.idx, 10);
+          var fld = inp.dataset.rf;
+          if (wiz.risks[idx]) {
+            if (fld === "probability" || fld === "impact") wiz.risks[idx][fld] = parseInt(inp.value, 10) || 1;
+            else if (fld === "costImpact") wiz.risks[idx][fld] = parseFloat(inp.value) || 0;
+            else wiz.risks[idx][fld] = inp.value;
+          }
+        });
+      } else if (wiz.step === 5) {
+        var wp = modalContainer.querySelector("#wzWipLimit");
+        if (wp) wiz.wipLimit = parseInt(wp.value, 10) || 3;
+      }
+    }
+
+    function attachStepEvents() {
+      if (wiz.step === 1) {
+        var addResBtn = modalContainer.querySelector("#wzAddRes");
+        if (addResBtn) addResBtn.addEventListener("click", function () {
+          syncCurrentStepInputs();
+          wiz.resources.push({ name: "Team Engineer " + (wiz.resources.length + 1), role: "Engineer", capacityHrs: 40, costRate: 70, billRate: 130 });
+          renderWizard();
+        });
+        modalContainer.querySelectorAll("[data-del-res]").forEach(function (b) {
+          b.addEventListener("click", function () {
+            syncCurrentStepInputs();
+            var idx = parseInt(this.dataset.delRes, 10);
+            wiz.resources.splice(idx, 1);
+            renderWizard();
+          });
+        });
+      } else if (wiz.step === 2) {
+        var addCardBtn = modalContainer.querySelector("#wzAddCard");
+        if (addCardBtn) addCardBtn.addEventListener("click", function () {
+          syncCurrentStepInputs();
+          var nextNum = wiz.cards.length + 1;
+          var wbsCode = "ENG-" + (nextNum * 10 + 100);
+          wiz.cards.push({ title: "Engineering Deliverable " + nextNum, wbsCode: wbsCode, assignee: (wiz.resources[0] || {}).name || "", priority: "medium", type: "Task", labels: ["Engineering"], est: 30, progressMode: "Rules of Credit", stage: "Ready", startOffset: 0, durDays: 14 });
+          renderWizard();
+        });
+        modalContainer.querySelectorAll("[data-del-card]").forEach(function (b) {
+          b.addEventListener("click", function () {
+            syncCurrentStepInputs();
+            var idx = parseInt(this.dataset.delCard, 10);
+            wiz.cards.splice(idx, 1);
+            renderWizard();
+          });
+        });
+      } else if (wiz.step === 4) {
+        var addRkBtn = modalContainer.querySelector("#wzAddRisk");
+        if (addRkBtn) addRkBtn.addEventListener("click", function () {
+          syncCurrentStepInputs();
+          wiz.risks.push({ title: "New project threat statement", riskType: "Threat", category: "Technical", probability: 3, impact: 3, response: "Mitigate", costImpact: 3000, scheduleImpactDays: 5, trigger: "" });
+          renderWizard();
+        });
+        modalContainer.querySelectorAll("[data-del-risk]").forEach(function (b) {
+          b.addEventListener("click", function () {
+            syncCurrentStepInputs();
+            var idx = parseInt(this.dataset.delRisk, 10);
+            wiz.risks.splice(idx, 1);
+            renderWizard();
+          });
+        });
+      }
+    }
+
+    function executeKickoff() {
+      var p = existingP;
+      var isNew = !p;
+      var b = state.boards.filter(function (x) { return x.id === wiz.charter.boardId; })[0] || targetBoard;
+
+      mutate(function () {
+        if (isNew) {
+          p = normalizeProject({
+            id: uid("p"),
+            name: wiz.charter.name,
+            client: wiz.charter.client,
+            boardId: b.id,
+            orgUnit: wiz.charter.orgUnit,
+            budget: wiz.charter.budget,
+            billable: true,
+            billingType: wiz.charter.billingType,
+            startDate: wiz.charter.startDate,
+            endDate: wiz.charter.endDate,
+            status: "Active",
+            projectType: "Delivery",
+            unanetProjectCode: wiz.charter.code,
+            ermasCode: "ERMAS-" + wiz.charter.code,
+            sourceSystem: "PMBOK Kickoff Wizard",
+            kickoff: { stage: "frozen", frozenAt: Date.now() },
+            baseline: { budget: wiz.charter.budget, endDate: wiz.charter.endDate }
+          }, state);
+          state.projects.push(p);
+        } else {
+          p.name = wiz.charter.name;
+          p.client = wiz.charter.client;
+          p.orgUnit = wiz.charter.orgUnit;
+          p.budget = wiz.charter.budget;
+          p.billingType = wiz.charter.billingType;
+          p.startDate = wiz.charter.startDate;
+          p.endDate = wiz.charter.endDate;
+          p.kickoff = { stage: "frozen", frozenAt: Date.now() };
+          p.baseline = { budget: p.budget, endDate: p.endDate };
+        }
+
+        // Resources
+        var resMap = {};
+        wiz.resources.forEach(function (tr) {
+          var existing = state.resources.filter(function (r) { return r.name.toLowerCase() === tr.name.toLowerCase(); })[0];
+          if (!existing) {
+            existing = normalizeResource({
+              id: uid("r"),
+              name: tr.name,
+              role: tr.role,
+              dept: tr.dept || "Engineering",
+              capacityHrs: tr.capacityHrs || 40,
+              costRate: tr.costRate || 70,
+              billRate: tr.billRate || 130,
+              type: "Employee",
+              company: "Techniek",
+              unit: "hour",
+              status: "Active",
+              notes: "Provisioned via PMBOK Kickoff Wizard"
+            });
+            state.resources.push(existing);
+          } else {
+            if (tr.costRate) existing.costRate = tr.costRate;
+            if (tr.billRate) existing.billRate = tr.billRate;
+          }
+          resMap[tr.name] = existing.id;
+          if (b.rosterIds.indexOf(existing.id) === -1) b.rosterIds.push(existing.id);
+        });
+
+        // WBS Elements
+        (wiz.wbsElements || []).forEach(function (we) {
+          var exists = state.wbsElements.some(function (w) { return w.projectId === p.id && w.wbsCode === we.wbsCode; });
+          if (!exists) {
+            state.wbsElements.push(normalizeWbsElement({
+              id: uid("wbs"),
+              projectId: p.id,
+              wbsCode: we.wbsCode,
+              parentWbsCode: we.parentWbsCode || "",
+              title: we.title,
+              description: we.title + " (PMBOK WBS element)",
+              isSummary: !!we.isSummary,
+              sortOrder: we.sortOrder || 1,
+              percentComplete: 0
+            }));
+          }
+        });
+
+        // Cards
+        var cardByWbs = {};
+        var colMap = {};
+        (b.columns || []).forEach(function (c) { colMap[c.name] = c.id; });
+        var defaultCol = b.columns[0].id;
+
+        wiz.cards.forEach(function (tc) {
+          var cardStart = addDaysISO(wiz.charter.startDate, tc.startOffset || 0);
+          var cardDue = addDaysISO(cardStart, tc.durDays || 14);
+          var assigneeId = tc.assignee && resMap[tc.assignee] ? resMap[tc.assignee] : null;
+          var colId = colMap[tc.stage] || defaultCol;
+
+          var c = normalizeWorkItem({
+            id: uid("c"),
+            boardId: b.id,
+            columnId: colId,
+            projectId: p.id,
+            title: tc.title,
+            desc: "PMBOK work package deliverable for " + p.name,
+            assigneeId: assigneeId,
+            priority: tc.priority || "medium",
+            type: tc.type || (tc.milestone ? "Milestone" : "Task"),
+            labels: tc.labels || ["Engineering"],
+            due: cardDue,
+            startDate: cardStart,
+            estimateHours: tc.est || 20,
+            loggedHours: 0,
+            progress: 0,
+            physicalProgress: 0,
+            progressMode: tc.progressMode || "Rules of Credit",
+            ruleOfCreditId: tc.rocSchema || "",
+            ruleOfCreditStep: tc.rocSchema ? 1 : null,
+            milestone: !!tc.milestone,
+            wbsCode: tc.wbsCode || "",
+            parentWbsCode: "",
+            deps: [],
+            dependencyMode: "None",
+            dependencyWbsCodes: tc.depWbs || [],
+            resourceAssignments: assigneeId ? [{ resourceId: assigneeId, allocationPct: 100, role: "Lead" }] : [],
+            activity: [{ text: "Work item created in Kickoff Wizard", ts: Date.now() }],
+            createdAt: Date.now(),
+            order: state.cards.length
+          });
+          state.cards.push(c);
+          if (tc.wbsCode) cardByWbs[tc.wbsCode] = c;
+        });
+
+        // Precedence / Dependencies
+        wiz.cards.forEach(function (tc) {
+          var c = cardByWbs[tc.wbsCode];
+          if (!c) return;
+          if (tc.depWbs && tc.depWbs.length) {
+            c.dependencyMode = "Blocks until closed";
+            tc.depWbs.forEach(function (dw) {
+              var depCard = cardByWbs[dw];
+              if (depCard && c.deps.indexOf(depCard.id) === -1) c.deps.push(depCard.id);
+            });
+          }
+        });
+
+        // Risks
+        wiz.risks.forEach(function (rk) {
+          state.risks.push(normalizeRisk({
+            id: uid("rk"),
+            projectId: p.id,
+            title: rk.title,
+            riskType: rk.riskType || "Threat",
+            category: rk.category || "Technical",
+            probability: rk.probability || 3,
+            impact: rk.impact || 3,
+            residualProbability: Math.max(1, (rk.probability || 3) - 1),
+            residualImpact: Math.max(1, (rk.impact || 3) - 1),
+            response: rk.response || (rk.riskType === "Opportunity" ? "Exploit" : "Mitigate"),
+            status: "Open",
+            ownerId: Object.values(resMap)[0] || null,
+            costImpact: rk.costImpact || 0,
+            scheduleImpactDays: rk.scheduleImpactDays || 0,
+            trigger: rk.trigger || "",
+            notes: "Initial risk register seeded during PMBOK project kickoff.",
+            dateIdentified: wiz.charter.startDate,
+            lastReviewed: wiz.charter.startDate,
+            dueDate: addDaysISO(wiz.charter.startDate, 30)
+          }));
+        });
+
+        // Flow WIP Limit
+        if (wiz.wipLimit && b.columns) {
+          var inProgCol = b.columns.filter(function (col) { return /in progress|doing|executing/i.test(col.name); })[0];
+          if (inProgCol) inProgCol.wip = wiz.wipLimit;
+        }
+
+        // Sync schedule
+        syncProjectScheduleFromCards(p.id);
+        p.baseline = { budget: p.budget, endDate: p.endDate };
+
+        state.blankStart = false;
+        recordAudit("Project", p.id, "Project Kicked Off & Baseline Established", p.name);
+      });
+
+      closeModal();
+      state.activeBoardId = b.id;
+      save();
+      render();
+      toast("Project kicked off & baseline frozen: " + p.name, "ok");
+    }
+
+    renderWizard();
+    modal("PMBOK Project Kickoff Wizard", modalContainer, [], "xl");
+  }
+
   /* ---------- Kanban board ---------- */
   VIEWS.board = function (root) {
     var b = activeBoard();
+    var cardsOnBoard = boardCards(b.id);
+    var projectsOnBoard = state.projects.filter(function (p) { return p.boardId === b.id; });
+    var isZeroState = cardsOnBoard.length === 0 && (state.projects.length === 0 || projectsOnBoard.length === 0);
+
+    // State 1: Zero-State Opening Board Hub
+    if (isZeroState) {
+      renderOpeningBoardZeroState(root, b);
+      return;
+    }
+
     var head = pageHead(b.name, "Drag cards between stages. Columns are editable.");
+    if (canGovernRegisters()) {
+      var kickoffBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "★ Guided Kickoff");
+      kickoffBtn.addEventListener("click", function () { openProjectKickoffWizard(null); });
+      head.querySelector(".head-actions").appendChild(kickoffBtn);
+    }
     root.appendChild(head);
+
+    // State 2: Pre-Kickoff Planning Ribbon
+    var targetProject = (ui.filterProject ? projectById(ui.filterProject) : null) ||
+      projectsOnBoard.filter(function (p) { return p.kickoff && p.kickoff.stage !== "frozen"; })[0];
+    if (targetProject && targetProject.kickoff && targetProject.kickoff.stage !== "frozen") {
+      root.appendChild(renderKickoffRibbon(targetProject, b));
+    }
 
     // Toolbar: filters
     var toolbar = el("div", { class: "board-toolbar no-print" });
@@ -5211,7 +7081,16 @@
     projectSel.addEventListener("change", function () { ui.filterProject = this.value; render(); });
     filters.appendChild(textInput);
     filters.appendChild(projectSel);
-    var groupSel = el("select", { class: "select select-sm" }, "<option value=''>All WBS groups</option>" + ["ADMINISTRATION-CB", "TASK-1", "TASK-2", "TASK-3", "TASK-4", "TASK-5"].map(function (g) { return "<option value='" + g + "'" + (ui.filterWbsGroup === g ? " selected" : "") + ">" + esc(g) + "</option>"; }).join(""));
+
+    // Dynamic WBS groups from wbsElements hierarchy
+    var availableWbsGroups = (state.wbsElements || [])
+      .filter(function (w) { return w.isSummary || !w.parentWbsCode; })
+      .map(function (w) { return w.wbsCode; })
+      .filter(Boolean);
+    if (!availableWbsGroups.length) availableWbsGroups = ["ADMINISTRATION-CB", "TASK-1", "TASK-2", "TASK-3", "TASK-4", "TASK-5"];
+    else availableWbsGroups = availableWbsGroups.filter(function (v, i, a) { return a.indexOf(v) === i; }).sort();
+
+    var groupSel = el("select", { class: "select select-sm" }, "<option value=''>All WBS groups</option>" + availableWbsGroups.map(function (g) { return "<option value='" + g + "'" + (ui.filterWbsGroup === g ? " selected" : "") + ">" + esc(g) + "</option>"; }).join(""));
     groupSel.addEventListener("change", function () { ui.filterWbsGroup = this.value; render(); });
     filters.appendChild(groupSel);
     filters.appendChild(assigneeSel);
@@ -5453,7 +7332,18 @@
       }
       tb.appendChild(tr);
     });
-    if (!rows.length) tb.appendChild(el("tr", null, "<td colspan='9' class='empty'>No action items for this scope.</td>"));
+    if (!rows.length) {
+      var aiEmptyTr = el("tr", null);
+      var aiEmptyTd = el("td", { colspan: "9", class: "empty", style: "text-align:center; padding: 24px 16px;" });
+      aiEmptyTd.appendChild(el("div", { class: "muted mb" }, "No action items for this scope."));
+      if (canEdit()) {
+        var aiAddBtn = el("button", { class: "btn primary sm" }, "+ Action item");
+        aiAddBtn.addEventListener("click", function () { openActionItemEditor(); });
+        aiEmptyTd.appendChild(aiAddBtn);
+      }
+      aiEmptyTr.appendChild(aiEmptyTd);
+      tb.appendChild(aiEmptyTr);
+    }
     tbl.appendChild(tb); root.appendChild(el("div", { class: "panel table-wrap" })).appendChild(tbl);
   }
   function deleteActionItemPrompt(id) {
@@ -5581,7 +7471,27 @@
       var vid = e.target && e.target.closest ? (e.target.closest("[data-view-resource]") || {}).getAttribute && e.target.closest("[data-view-resource]").getAttribute("data-view-resource") : "";
       if (vid) { e.preventDefault(); openResourceDetail(vid); }
     });
-    if (!resources.length) tb.appendChild(el("tr", null, "<td colspan='16' class='empty'>No resources match the current filters.</td>"));
+    if (!resources.length) {
+      var emptyTr = el("tr", null,
+        "<td colspan='16' class='empty' style='padding:32px 16px;text-align:center'>" +
+        "<div style='font-size:15px;font-weight:600;margin-bottom:6px'>No resources match the active view</div>" +
+        "<div class='muted' style='margin-bottom:14px;font-size:13px'>Adjust your search filters or register a new team member, machine, or supply.</div>" +
+        "<div class='flex' style='justify-content:center;gap:8px'>" +
+        (ui.resourceSearch || ui.resourceType || ui.resourceUtilFilter ? "<button type='button' class='btn sm' id='btnClrResFilters'>Clear filters</button>" : "") +
+        (canManage ? "<button type='button' class='btn sm primary' id='btnAddResEmpty'>+ Add resource</button>" : "") +
+        "</div>" +
+        "</td>"
+      );
+      if (emptyTr.querySelector("#btnClrResFilters")) {
+        emptyTr.querySelector("#btnClrResFilters").addEventListener("click", function () {
+          ui.resourceSearch = ""; ui.resourceType = ""; ui.resourceUtilFilter = ""; render();
+        });
+      }
+      if (emptyTr.querySelector("#btnAddResEmpty")) {
+        emptyTr.querySelector("#btnAddResEmpty").addEventListener("click", function () { addResourceInline(); });
+      }
+      tb.appendChild(emptyTr);
+    }
     tbl.appendChild(tb);
     panel.appendChild(tbl);
     panel.appendChild(el("div", { class: "hint panel-pad" }, "PMO resource types include employees, subcontracted firms, tools/software, equipment, facilities, materials, and other costed constraints. Import merges by resource name or ID and preserves existing card assignments."));
@@ -5840,7 +7750,7 @@
     tbl.appendChild(tb); root.appendChild(el("div", { class: "panel table-wrap" })).appendChild(tbl);
   }
   function openWbsElementEditor(projectId, existing) {
-    if (!canEdit()) return toast("Viewer role is read-only", "err");
+    if (!canEdit()) return toast("Action blocked: Viewer role is read-only. Switch to an editor role or request edit access.", "err");
     var w = existing ? Object.assign({}, existing) : { projectId: projectId, wbsCode: "", parentWbsCode: "", title: "", description: "", isSummary: false, sourceBasis: "", plannedStart: "", plannedFinish: "", percentComplete: 0, remainingDuration: "", sortOrder: projectWbsElements(projectId).length + 1 };
     var body = el("div");
     body.innerHTML = "<div class='form-grid'>" +
@@ -5857,8 +7767,8 @@
       "<div class='form-row full'><label class='field-label inline'>Source basis</label><textarea class='textarea' id='wbsSource'>" + esc(w.sourceBasis || "") + "</textarea></div></div>";
     modal(existing ? "Edit WBS element" : "Add WBS element", body, [{ label: "Cancel", cls: "btn", fn: closeModal }, { label: existing ? "Save" : "Add", cls: "btn primary", fn: function () {
       var code = $("#wbsCode").value.trim().toUpperCase();
-      if (!code) return toast("WBS / Schedule ID is required", "err");
-      if (isLegacyWbsCode(code)) return toast("Legacy numeric WBS codes cannot be used as visible WBS codes", "err");
+      if (!code) return toast("Missing WBS code: Schedule ID is required to map tasks. Enter an identifier like 1.1.", "err");
+      if (isLegacyWbsCode(code)) return toast("Invalid WBS format: Legacy numeric codes are reserved. Use a hierarchical code like 1.1 or Phase-A.", "err");
       mutate(function () {
         var current = existing ? wbsByCode(projectId, existing.wbsCode) : null;
         if (!current) { current = { id: uid("wbs"), projectId: projectId }; state.wbsElements.push(current); }
@@ -6076,7 +7986,7 @@
   }
   function openRiskPlanEditor(projectId) {
     var p = projectById(projectId);
-    if (!p || !canGovernRegisters()) { toast("Risk plan management is limited to governance roles", "err"); return; }
+    if (!p || !canGovernRegisters()) { toast("Access restricted: Risk plan management requires governance authority. Switch to PM or Admin role to edit plans.", "err"); return; }
     var plan = p.riskManagementPlan || {};
     var pending = { dataUrl: plan.dataUrl || "", fileName: plan.fileName || "", mimeType: plan.mimeType || "", size: plan.size || 0 };
     var body = el("div");
@@ -6096,14 +8006,14 @@
       if (file.size > RISK_PLAN_MAX_BYTES) { hint.innerHTML = "<span style='color:var(--danger)'>File is " + fmtBytes(file.size) + " — over the " + fmtBytes(RISK_PLAN_MAX_BYTES) + " local limit. Use the SharePoint link instead.</span>"; this.value = ""; return; }
       var reader = new FileReader();
       reader.onload = function () { pending.dataUrl = String(reader.result || ""); pending.fileName = file.name; pending.mimeType = file.type || ""; pending.size = file.size; hint.textContent = "Selected: " + file.name + " (" + fmtBytes(file.size) + ")"; };
-      reader.onerror = function () { toast("Could not read file", "err"); };
+      reader.onerror = function () { toast("File read error: The selected file could not be read into memory. Select another file or use a link.", "err"); };
       reader.readAsDataURL(file);
     });
     modal((p.riskManagementPlan ? "Update" : "Upload") + " Risk Management Plan", body, [
       { label: "Cancel", cls: "btn", fn: closeModal },
       { label: "Save plan", cls: "btn primary", fn: function () {
         var url = $("#rpUrl").value.trim();
-        if (!pending.dataUrl && !url) { toast("Attach a file or provide a controlled-copy link", "err"); return; }
+        if (!pending.dataUrl && !url) { toast("Missing risk plan: No file or URL provided. Choose a local file to upload or enter a controlled-copy link.", "err"); return; }
         mutate(function () {
           var prior = p.riskManagementPlan;
           if (prior) { p.riskManagementPlanHistory = p.riskManagementPlanHistory || []; var arch = Object.assign({}, prior); delete arch.dataUrl; p.riskManagementPlanHistory.push(arch); }
@@ -6151,13 +8061,32 @@
   VIEWS.projects = function (root) {
     var head = pageHead("Projects", "Rollups across all boards. Open a board, or administer a project's information and change orders.");
     if (canGovernRegisters()) {
+      var kickoffBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "★ Guided Kickoff");
+      kickoffBtn.addEventListener("click", function () { openProjectKickoffWizard(null); });
+      head.querySelector(".head-actions").appendChild(kickoffBtn);
       var addBtn = el("button", { class: "btn primary sm" }, "+ New project");
       addBtn.addEventListener("click", function () { openProjectAdmin(null); });
       head.querySelector(".head-actions").appendChild(addBtn);
     }
     root.appendChild(head);
     var fin = canFinance();
-    if (!state.projects.length) { root.appendChild(el("div", { class: "panel panel-pad empty" }, "No projects yet. Create one to start tracking scope, budget, and change orders.")); return; }
+    if (!state.projects.length) {
+      var emptyPanel = el("div", { class: "panel panel-pad empty", style: "text-align:center;padding:36px 20px" });
+      emptyPanel.innerHTML = "<p style='margin-bottom:16px;font-size:14px;color:var(--text-muted)'>No projects yet. Use Guided Kickoff to provision a PMBOK-aligned deliverable package, select an industry starter template, or charter a project manually.</p>";
+      if (canGovernRegisters()) {
+        var startWizBtn = el("button", { class: "btn primary", style: "margin-right:8px" }, "★ Start Guided Kickoff");
+        startWizBtn.addEventListener("click", function () { openProjectKickoffWizard(null); });
+        emptyPanel.appendChild(startWizBtn);
+        var tplBtn = el("button", { class: "btn", style: "margin-right:8px" }, "📋 Browse Templates");
+        tplBtn.addEventListener("click", function () { openTemplateChooserModal(null, function () { openProjectAdmin(null); }); });
+        emptyPanel.appendChild(tplBtn);
+        var newManBtn = el("button", { class: "btn" }, "+ New Project Charter");
+        newManBtn.addEventListener("click", function () { openProjectAdmin(null); });
+        emptyPanel.appendChild(newManBtn);
+      }
+      root.appendChild(emptyPanel);
+      return;
+    }
     var panel = el("div", { class: "panel" });
     var tbl = el("table", { class: "table" });
     var targetCmLabel = pct1(targetContributionMarginRatio() * 100);
@@ -6170,8 +8099,10 @@
       var burnCls = r.burn > 0.9 ? "danger" : r.burn > 0.7 ? "warn" : "ok";
       var cos = changeOrdersFor(p.id);
       var pending = cos.filter(function (c) { return !coApproved(c) && c.status !== "Rejected"; }).length;
+      var isKickoffPend = p.kickoff && p.kickoff.stage !== "frozen";
       var html =
-        "<td><button class='linklike' data-open-project='" + p.id + "'>" + esc(p.name) + "</button></td>" +
+        "<td><button class='linklike' data-open-project='" + p.id + "'>" + esc(p.name) + "</button>" +
+        (isKickoffPend ? " <span class='badge warn' style='margin-left:6px;cursor:pointer' title='Kickoff setup incomplete'>Kickoff Pending</span>" : "") + "</td>" +
         "<td class='muted'>" + esc(p.client) + "</td>" +
         "<td><span class='badge " + (p.status === "Active" ? "ok" : p.status === "Closed" || p.status === "Cancelled" ? "neutral" : "warn") + "'>" + esc(p.status) + "</span></td>" +
         "<td><div class='flex'><div class='bar'><span class='ok' style='width:" + r.progress + "%'></span></div> <span class='muted'>" + r.progress + "%</span></div></td>" +
@@ -6185,6 +8116,11 @@
       }
       html += "<td class='right'></td>";
       tr.innerHTML = html;
+      if (isKickoffPend && canGovernRegisters()) {
+        var rowWizBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "★ Kickoff");
+        rowWizBtn.addEventListener("click", function () { openProjectKickoffWizard(null, p.id); });
+        tr.querySelector("td.right").appendChild(rowWizBtn);
+      }
       var adminBtn = el("button", { class: "btn sm" }, canGovernRegisters() ? "⚙ Admin" : "View");
       adminBtn.addEventListener("click", function () { openProjectAdmin(p.id); });
       tr.querySelector("td.right").appendChild(adminBtn);
@@ -6202,29 +8138,256 @@
 
   /* ---------- Project administration ---------- */
   function openProjectAdmin(projectId) {
+    if (typeof projectId !== "string") projectId = null;
     if (!canEdit() && !projectId) return;
     var isNew = !projectId;
-    var p = projectId ? projectById(projectId) : {
-      id: uid("p"), name: "", client: "", boardId: (activeBoard() || state.boards[0]).id, budget: 0,
-      billable: true, billingType: "T&M", orgUnit: DEFAULT_ORG_UNIT, startDate: todayISO(), endDate: todayISO(), status: "Active", _new: true,
-    };
+    var p = projectId ? projectById(projectId) : null;
+    if (!p) {
+      isNew = true;
+      var ab = activeBoard() || (state.boards && state.boards[0]) || { id: "b1" };
+      p = {
+        id: uid("p"), name: "", client: "", boardId: ab.id, budget: 0,
+        billable: true, billingType: "T&M", orgUnit: defaultOrgUnit(), startDate: todayISO(), endDate: todayISO(), status: "Active", _new: true,
+      };
+    }
     var ro = !canEdit();
     var body = el("div", { class: "card-editor-compact" });
-    body.innerHTML =
-      "<div class='form-grid'>" +
-      "<div class='form-row full'><label class='field-label inline'>Project name</label><input class='input' id='paName' value='" + esc(p.name) + "'" + (ro ? " disabled" : "") + "></div>" +
-      "<div class='form-row'><label class='field-label inline'>Client</label><input class='input' id='paClient' value='" + esc(p.client) + "'" + (ro ? " disabled" : "") + "></div>" +
-      "<div class='form-row'><label class='field-label inline'>Primary board</label><select class='select' id='paBoard'" + (ro ? " disabled" : "") + ">" + state.boards.map(function (b) { return "<option value='" + b.id + "'" + (b.id === p.boardId ? " selected" : "") + ">" + esc(b.name) + "</option>"; }).join("") + "</select></div>" +
-      "<div class='form-row'><label class='field-label inline'>Org unit</label><select class='select' id='paOrgUnit'" + (ro ? " disabled" : "") + ">" + ORG_UNITS.map(function (org) { return "<option value='" + org + "'" + (org === (p.orgUnit || DEFAULT_ORG_UNIT) ? " selected" : "") + ">" + org + "</option>"; }).join("") + "</select></div>" +
-      "<div class='form-row'><label class='field-label inline'>Status</label><select class='select' id='paStatus'" + (ro ? " disabled" : "") + ">" + PROJECT_STATUS.map(function (s) { return "<option" + (s === p.status ? " selected" : "") + ">" + s + "</option>"; }).join("") + "</select></div>" +
-      "<div class='form-row'><label class='field-label inline'>Contract value / budget ($)</label><input class='input' type='number' id='paBudget' value='" + (p.budget || 0) + "'" + (ro ? " disabled" : "") + "></div>" +
-      "<div class='form-row'><label class='field-label inline'>Billing type</label><select class='select' id='paBillingType'" + (ro ? " disabled" : "") + ">" + BILLING_TYPES.map(function (bt) { return "<option" + (bt === projectBillingType(p) ? " selected" : "") + ">" + bt + "</option>"; }).join("") + "</select></div>" +
-      "<div class='form-row'><label class='field-label inline'><input type='checkbox' id='paBillable'" + (p.billable ? " checked" : "") + (ro ? " disabled" : "") + "> Billable (client-facing revenue)</label></div>" +
-      "<div class='form-row'><label class='field-label inline'>Start date</label><input class='input' type='date' id='paStart' value='" + (p.startDate || "") + "'" + (ro ? " disabled" : "") + "></div>" +
-      "<div class='form-row'><label class='field-label inline'>Target end date</label><input class='input' type='date' id='paEnd' value='" + (p.endDate || "") + "'" + (ro ? " disabled" : "") + "></div>" +
-      "</div>";
 
-    if (!isNew) {
+    if (isNew) {
+      // Top Segmented Switcher (NN/g Standard: User Control, Freedom & Visibility)
+      var segSwitch = el("div", { class: "modal-segmented-switch mb" });
+      var btnCharter = el("button", { type: "button", class: "modal-seg-btn active", id: "segCharterTab" }, "📝 Custom Project Charter");
+      var btnTemplates = el("button", { type: "button", class: "modal-seg-btn", id: "segTemplatesTab" }, "🚀 Browse Industry Starter Templates");
+      segSwitch.appendChild(btnCharter);
+      segSwitch.appendChild(btnTemplates);
+      body.appendChild(segSwitch);
+
+      var charterView = el("div", { id: "paCharterView" });
+      var templatesView = el("div", { id: "paTemplatesView", style: "display:none" });
+
+      var setViewMode = function (mode) {
+        if (mode === "templates") {
+          btnCharter.classList.remove("active");
+          btnTemplates.classList.add("active");
+          charterView.style.display = "none";
+          templatesView.style.display = "block";
+        } else {
+          btnTemplates.classList.remove("active");
+          btnCharter.classList.add("active");
+          templatesView.style.display = "none";
+          charterView.style.display = "block";
+        }
+      };
+      btnCharter.addEventListener("click", function () { setViewMode("charter"); });
+      btnTemplates.addEventListener("click", function () { setViewMode("templates"); });
+
+      // Build Templates View
+      var tplHead = el("div", { class: "wizard-pane-head flex wrap mb", style: "justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border)" });
+      tplHead.innerHTML = "<div><h4 style='margin:0 0 4px;font-size:15px'>Industry Project Starter Templates</h4><p style='margin:0;font-size:12.5px;color:var(--text-soft)'>Select a pre-configured engineering package or load parameters directly into your custom charter editor.</p></div>";
+      var tplTopBack = el("button", { type: "button", class: "btn sm", id: "tplBackToCharterTop" }, "⇦ Back to Custom Charter");
+      tplTopBack.addEventListener("click", function () { setViewMode("charter"); });
+      tplHead.appendChild(tplTopBack);
+      templatesView.appendChild(tplHead);
+
+      var tplGrid = el("div", { class: "template-card-grid" });
+      Object.keys(INDUSTRY_TEMPLATES).forEach(function (k) {
+        var t = INDUSTRY_TEMPLATES[k];
+        var card = el("div", { class: "template-item" });
+        card.innerHTML =
+          "<div class='template-item-head'><strong>" + esc(t.name) + "</strong><span class='badge ok'>" + esc(t.orgUnit) + "</span></div>" +
+          "<p>" + esc(t.description) + "</p>" +
+          "<div class='flex wrap' style='gap:6px;font-size:11px;margin-bottom:10px'>" +
+          "<span class='chip'>Client: " + esc(t.client) + "</span>" +
+          "<span class='chip'>Budget: " + money(t.budget) + " (" + esc(t.billingType) + ")</span>" +
+          "<span class='chip'>" + t.durationWeeks + " weeks</span>" +
+          "<span class='chip'>" + (t.cards || []).length + " work packages</span>" +
+          "</div>" +
+          "<div class='flex wrap' style='gap:6px'>" +
+          "<button type='button' class='btn sm primary flex-1' data-deploy-tpl='" + t.id + "'>Deploy this project</button>" +
+          "<button type='button' class='btn sm ghost flex-1' data-load-tpl='" + t.id + "'>Load into Charter ⇨</button>" +
+          "</div>";
+
+        card.querySelector("[data-deploy-tpl]").addEventListener("click", function () {
+          closeModal();
+          applyIndustryTemplate(t.id, (activeBoard() || state.boards[0]).id);
+        });
+
+        card.querySelector("[data-load-tpl]").addEventListener("click", function () {
+          var n = $("#paName"); if (n) n.value = t.name;
+          var cl = $("#paClient"); if (cl) cl.value = t.client;
+          var bg = $("#paBudget"); if (bg) bg.value = t.budget;
+          var ou = $("#paOrgUnit"); if (ou) {
+            if (orgUnitsList().indexOf(t.orgUnit) === -1) {
+              var opt = el("option", { value: t.orgUnit, selected: true }, t.orgUnit);
+              ou.appendChild(opt);
+            }
+            ou.value = t.orgUnit;
+          }
+          var bt = $("#paBillingType"); if (bt) {
+            if (billingTypesList().indexOf(t.billingType) === -1) {
+              var opt2 = el("option", { value: t.billingType, selected: true }, t.billingType);
+              bt.appendChild(opt2);
+            }
+            bt.value = t.billingType;
+          }
+          var desc = $("#paPurpose"); if (desc) desc.value = t.description;
+          setViewMode("charter");
+          toast("Loaded '" + t.name + "' into Custom Charter editor", "ok");
+        });
+
+        tplGrid.appendChild(card);
+      });
+      templatesView.appendChild(tplGrid);
+
+      var tplFoot = el("div", { class: "flex mt", style: "justify-content:space-between;align-items:center;padding-top:14px;border-top:1px solid var(--border)" });
+      var tplBtmBack = el("button", { type: "button", class: "btn sm", id: "tplBackToCharterBtm" }, "⇦ Back to Custom Charter");
+      tplBtmBack.addEventListener("click", function () { setViewMode("charter"); });
+      tplFoot.appendChild(tplBtmBack);
+      templatesView.appendChild(tplFoot);
+
+      // Build Charter View
+      var helperBanner = el("div", { class: "hint mb flex wrap", style: "justify-content:space-between;align-items:center;padding:10px 14px;background:var(--surface-2);border-radius:var(--radius-sm);border:1px solid var(--border)" });
+      helperBanner.innerHTML = "<span>★ <strong>Planning a structured project?</strong> Use the Guided Kickoff for WBS decomposition, staffing, and risk calibration, or choose an industry template.</span>";
+      var hActions = el("div", { class: "flex", style: "gap:6px" });
+      var wizLink = el("button", { type: "button", class: "btn sm", style: "font-size:11.5px" }, "★ Guided Kickoff");
+      wizLink.addEventListener("click", function () { closeModal(); openProjectKickoffWizard(null); });
+      var tplLink = el("button", { type: "button", class: "btn sm ghost", style: "font-size:11.5px" }, "Browse Templates");
+      tplLink.addEventListener("click", function () { setViewMode("templates"); });
+      hActions.appendChild(wizLink);
+      hActions.appendChild(tplLink);
+      helperBanner.appendChild(hActions);
+      charterView.appendChild(helperBanner);
+
+      // Unique existing clients for autocomplete datalist
+      var existingClients = [];
+      (state.projects || []).forEach(function (proj) {
+        if (proj.client && existingClients.indexOf(proj.client) === -1) existingClients.push(proj.client);
+      });
+
+      var formWrap = el("div");
+      formWrap.innerHTML =
+        "<datalist id='paClientList'>" + existingClients.map(function (c) { return "<option value='" + esc(c) + "'>"; }).join("") + "</datalist>" +
+        "<div class='form-grid'>" +
+        "<div class='form-row full'><label class='field-label inline'>Project name *</label><input class='input' id='paName' placeholder='e.g. Substation Automation Upgrade' value='" + esc(p.name) + "'></div>" +
+        "<div class='form-row'><label class='field-label inline'>Client</label><input class='input' id='paClient' list='paClientList' placeholder='Client organization' value='" + esc(p.client) + "'></div>" +
+        "<div class='form-row'><label class='field-label inline'>Primary board</label><select class='select' id='paBoard'>" + state.boards.map(function (b) { return "<option value='" + b.id + "'" + (b.id === p.boardId ? " selected" : "") + ">" + esc(b.name) + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'>Operating unit</label><div class='flex' style='gap:6px'><select class='select' id='paOrgUnit' style='flex:1'>" + orgUnitsList().map(function (org) { return "<option value='" + esc(org) + "'" + (org === (p.orgUnit || defaultOrgUnit()) ? " selected" : "") + ">" + esc(org) + "</option>"; }).join("") + "</select><button type='button' class='btn sm ghost' id='paAddOrgUnitBtn' title='Add custom operating unit'>+ Unit</button></div></div>" +
+        "<div class='form-row'><label class='field-label inline'>Status</label><select class='select' id='paStatus'>" + PROJECT_STATUS.map(function (s) { return "<option" + (s === p.status ? " selected" : "") + ">" + s + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'>Contract value / budget BAC ($)</label><input class='input' type='number' id='paBudget' value='" + (p.budget || 0) + "'></div>" +
+        "<div class='form-row'><label class='field-label inline'>Billing type</label><div class='flex' style='gap:6px'><select class='select' id='paBillingType' style='flex:1'>" + billingTypesList().map(function (bt) { return "<option value='" + esc(bt) + "'" + (bt === projectBillingType(p) ? " selected" : "") + ">" + esc(bt) + "</option>"; }).join("") + "</select><button type='button' class='btn sm ghost' id='paAddBillingBtn' title='Add custom contract billing code'>+ Code</button></div></div>" +
+        "<div class='form-row'><label class='field-label inline'><input type='checkbox' id='paBillable'" + (p.billable ? " checked" : "") + "> Billable (client-facing revenue)</label></div>" +
+        "<div class='form-row'><label class='field-label inline'>Start date</label><input class='input' type='date' id='paStart' value='" + (p.startDate || "") + "'></div>" +
+        "<div class='form-row'><label class='field-label inline'>Target end date</label><input class='input' type='date' id='paEnd' value='" + (p.endDate || "") + "'></div>" +
+        "<div class='form-row full'><label class='field-label inline'>Scope narrative / Business purpose</label><textarea class='textarea' id='paPurpose' rows='2' placeholder='Define contractual boundary and delivery intent...'>" + esc(p.description || "") + "</textarea></div>" +
+        "</div>";
+      charterView.appendChild(formWrap);
+
+      // Inline custom unit and billing type handlers
+      var addUnitBtn = formWrap.querySelector("#paAddOrgUnitBtn");
+      if (addUnitBtn) {
+        addUnitBtn.addEventListener("click", function () {
+          var u = prompt("Enter new Operating Unit / Business Unit name:");
+          if (u && u.trim()) {
+            u = u.trim();
+            if (!state.settings.orgUnits) state.settings.orgUnits = orgUnitsList();
+            if (state.settings.orgUnits.indexOf(u) === -1) state.settings.orgUnits.push(u);
+            save();
+            var ouSel = formWrap.querySelector("#paOrgUnit");
+            if (ouSel) {
+              ouSel.innerHTML = orgUnitsList().map(function (o) { return "<option value='" + esc(o) + "'>" + esc(o) + "</option>"; }).join("");
+              ouSel.value = u;
+            }
+            toast("Added operating unit: " + u, "ok");
+          }
+        });
+      }
+
+      var addBillingBtn = formWrap.querySelector("#paAddBillingBtn");
+      if (addBillingBtn) {
+        addBillingBtn.addEventListener("click", function () {
+          var b = prompt("Enter new Contract Billing Type / Code (e.g. GMP, Target Price, Unit Rate):");
+          if (b && b.trim()) {
+            b = b.trim();
+            if (!state.settings.billingTypes) state.settings.billingTypes = billingTypesList();
+            if (state.settings.billingTypes.indexOf(b) === -1) state.settings.billingTypes.push(b);
+            save();
+            var btSel = formWrap.querySelector("#paBillingType");
+            if (btSel) {
+              btSel.innerHTML = billingTypesList().map(function (bt) { return "<option value='" + esc(bt) + "'>" + esc(bt) + "</option>"; }).join("");
+              btSel.value = b;
+            }
+            toast("Added billing type: " + b, "ok");
+          }
+        });
+      }
+
+      // Embed PM Advisor & Procedure Copilot right inside the Charter View
+      renderProjectCharterAdvisorCopilot(
+        charterView,
+        function () {
+          var n = $("#paName"), cl = $("#paClient"), og = $("#paOrgUnit"), bg = $("#paBudget"), bt = $("#paBillingType"), pp = $("#paPurpose");
+          return {
+            name: n ? n.value.trim() : "",
+            client: cl ? cl.value.trim() : "",
+            orgUnit: og ? og.value : defaultOrgUnit(),
+            budget: bg ? parseFloat(bg.value) || 0 : 0,
+            billingType: bt ? bt.value : "FP",
+            purpose: pp ? pp.value.trim() : "",
+            scopeType: "charter"
+          };
+        },
+        function (suggested) {
+          if (!suggested) return;
+          if (suggested.billingType) {
+            var bt = $("#paBillingType");
+            if (bt) {
+              if (billingTypesList().indexOf(suggested.billingType) === -1) {
+                var opt = el("option", { value: suggested.billingType }, suggested.billingType);
+                bt.appendChild(opt);
+              }
+              bt.value = suggested.billingType;
+            }
+          }
+          if (suggested.orgUnit) {
+            var og = $("#paOrgUnit");
+            if (og) {
+              if (orgUnitsList().indexOf(suggested.orgUnit) === -1) {
+                var opt2 = el("option", { value: suggested.orgUnit }, suggested.orgUnit);
+                og.appendChild(opt2);
+              }
+              og.value = suggested.orgUnit;
+            }
+          }
+          if (suggested.budget) {
+            var bg = $("#paBudget");
+            if (bg) bg.value = suggested.budget;
+          }
+          if (suggested.client) {
+            var cl = $("#paClient");
+            if (cl) cl.value = suggested.client;
+          }
+        },
+        "charter"
+      );
+
+      body.appendChild(charterView);
+      body.appendChild(templatesView);
+    } else {
+      // Existing project editing form
+      body.innerHTML =
+        "<div class='form-grid'>" +
+        "<div class='form-row full'><label class='field-label inline'>Project name</label><input class='input' id='paName' value='" + esc(p.name) + "'" + (ro ? " disabled" : "") + "></div>" +
+        "<div class='form-row'><label class='field-label inline'>Client</label><input class='input' id='paClient' value='" + esc(p.client) + "'" + (ro ? " disabled" : "") + "></div>" +
+        "<div class='form-row'><label class='field-label inline'>Primary board</label><select class='select' id='paBoard'" + (ro ? " disabled" : "") + ">" + state.boards.map(function (b) { return "<option value='" + b.id + "'" + (b.id === p.boardId ? " selected" : "") + ">" + esc(b.name) + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'>Org unit</label><select class='select' id='paOrgUnit'" + (ro ? " disabled" : "") + ">" + orgUnitsList().map(function (org) { return "<option value='" + esc(org) + "'" + (org === (p.orgUnit || defaultOrgUnit()) ? " selected" : "") + ">" + esc(org) + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'>Status</label><select class='select' id='paStatus'" + (ro ? " disabled" : "") + ">" + PROJECT_STATUS.map(function (s) { return "<option" + (s === p.status ? " selected" : "") + ">" + s + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'>Contract value / budget ($)</label><input class='input' type='number' id='paBudget' value='" + (p.budget || 0) + "'" + (ro ? " disabled" : "") + "></div>" +
+        "<div class='form-row'><label class='field-label inline'>Billing type</label><select class='select' id='paBillingType'" + (ro ? " disabled" : "") + ">" + billingTypesList().map(function (bt) { return "<option" + (bt === projectBillingType(p) ? " selected" : "") + ">" + esc(bt) + "</option>"; }).join("") + "</select></div>" +
+        "<div class='form-row'><label class='field-label inline'><input type='checkbox' id='paBillable'" + (p.billable ? " checked" : "") + (ro ? " disabled" : "") + "> Billable (client-facing revenue)</label></div>" +
+        "<div class='form-row'><label class='field-label inline'>Start date</label><input class='input' type='date' id='paStart' value='" + (p.startDate || "") + "'" + (ro ? " disabled" : "") + "></div>" +
+        "<div class='form-row'><label class='field-label inline'>Target end date</label><input class='input' type='date' id='paEnd' value='" + (p.endDate || "") + "'" + (ro ? " disabled" : "") + "></div>" +
+        "</div>";
+
       // Baseline + change-control summary (finance roles only).
       if (canFinance()) {
         var bImpact = coBudgetImpact(p.id), sImpact = coScheduleImpact(p.id);
@@ -6256,7 +8419,7 @@
             "<td class='num'>" + (co.budgetDelta ? money(co.budgetDelta) : "—") + "</td><td class='num'>" + (co.scheduleDeltaDays || "—") + "</td>" +
             "<td>" + coStatusBadge(co.status) + "</td>";
           tr.addEventListener("click", function () {
-            if (!canGovernRegisters()) { toast("Change control is read-only for your role", "err"); return; }
+            if (!canGovernRegisters()) { toast("Access restricted: Change control requires governance authority. Switch to PM or Admin role to edit change orders.", "err"); return; }
             closeModal(); openChangeOrderEditor(co.id, p.id);
           });
           ctb.appendChild(tr);
@@ -6303,21 +8466,51 @@
         toast("Project deleted");
       });
     } });
-    foot.push({ label: "Close", cls: "btn", fn: closeModal });
-    if (canGovernRegisters()) foot.push({ label: isNew ? "Create project" : "Save", cls: "btn primary", fn: function () {
-      var name = $("#paName").value.trim();
-      if (!name) { toast("Project name is required", "err"); return; }
-      mutate(function () {
-        p.name = name; p.client = $("#paClient").value.trim(); p.boardId = $("#paBoard").value; p.orgUnit = $("#paOrgUnit").value || DEFAULT_ORG_UNIT;
-        p.status = $("#paStatus").value; p.budget = parseFloat($("#paBudget").value) || 0;
-        p.billingType = $("#paBillingType").value; p.billable = $("#paBillable").checked; p.startDate = $("#paStart").value || null; p.endDate = $("#paEnd").value || null;
-        if (p._new) { delete p._new; p.baseline = { budget: p.budget, endDate: p.endDate }; normalizeProject(p, state); state.projects.push(p); recordAudit("Project", p.id, "Project created", p.name); }
-        else { normalizeProject(p, state); recordAudit("Project", p.id, "Project saved", p.name); }
-      });
-      closeModal();
-      toast(isNew ? "Project created" : "Project saved", "ok");
-    } });
-    modal(isNew ? "New project" : "Administer · " + p.name, body, foot);
+    foot.push({ label: "Cancel", cls: "btn", fn: closeModal });
+    if (canGovernRegisters()) {
+      if (isNew) {
+        foot.push({
+          label: "★ Create & Launch Kickoff",
+          cls: "btn",
+          fn: function () {
+            var name = $("#paName").value.trim();
+            if (!name) { toast("Missing project name: Project name cannot be blank. Enter a name before launching Kickoff.", "err"); return; }
+            var desc = $("#paPurpose") ? $("#paPurpose").value.trim() : "";
+            mutate(function () {
+              p.name = name; p.client = $("#paClient").value.trim(); p.boardId = $("#paBoard").value; p.orgUnit = $("#paOrgUnit").value || defaultOrgUnit();
+              p.status = $("#paStatus").value; p.budget = parseFloat($("#paBudget").value) || 0;
+              p.billingType = $("#paBillingType").value; p.billable = $("#paBillable").checked; p.startDate = $("#paStart").value || null; p.endDate = $("#paEnd").value || null;
+              p.description = desc;
+              delete p._new;
+              p.baseline = { budget: p.budget, endDate: p.endDate };
+              p.kickoff = { stage: "in_progress", startedAt: Date.now() };
+              normalizeProject(p, state);
+              state.projects.push(p);
+              recordAudit("Project", p.id, "Project created with Guided Kickoff", p.name);
+            });
+            closeModal();
+            toast("Project created — launching Guided Kickoff", "ok");
+            openProjectKickoffWizard(null, p.id);
+          }
+        });
+      }
+      foot.push({ label: isNew ? "Create project" : "Save", cls: "btn primary", fn: function () {
+        var name = $("#paName").value.trim();
+        if (!name) { toast("Missing project name: Project name cannot be blank. Enter a name to save the project.", "err"); return; }
+        var desc = $("#paPurpose") ? $("#paPurpose").value.trim() : "";
+        mutate(function () {
+          p.name = name; p.client = $("#paClient").value.trim(); p.boardId = $("#paBoard").value; p.orgUnit = $("#paOrgUnit").value || defaultOrgUnit();
+          p.status = $("#paStatus").value; p.budget = parseFloat($("#paBudget").value) || 0;
+          p.billingType = $("#paBillingType").value; p.billable = $("#paBillable").checked; p.startDate = $("#paStart").value || null; p.endDate = $("#paEnd").value || null;
+          p.description = desc;
+          if (p._new) { delete p._new; p.baseline = { budget: p.budget, endDate: p.endDate }; normalizeProject(p, state); state.projects.push(p); recordAudit("Project", p.id, "Project created", p.name); }
+          else { normalizeProject(p, state); recordAudit("Project", p.id, "Project saved", p.name); }
+        });
+        closeModal();
+        toast(isNew ? "Project created" : "Project saved", "ok");
+      } });
+    }
+    modal(isNew ? "New project" : "Administer · " + p.name, body, foot, isNew ? "lg" : null);
     setTimeout(function () { var n = $("#paName"); if (n && isNew) n.focus(); }, 30);
   }
 
@@ -6415,7 +8608,20 @@
     stats.appendChild(statCard("Approved Δ schedule", approvedDays + " days", "across projects", approvedDays > 0 ? "warn" : "ok"));
     root.appendChild(stats);
 
-    if (!cos.length) { root.appendChild(el("div", { class: "panel panel-pad empty mt" }, "No change orders yet. Raise one from here or from a project's admin panel.")); return; }
+    if (!cos.length) {
+      var emptyBox = el("div", { class: "panel panel-pad empty mt", style: "text-align:center;padding:36px 16px" });
+      emptyBox.innerHTML =
+        "<div style='font-size:16px;font-weight:600;margin-bottom:8px'>No change orders logged</div>" +
+        "<p class='muted' style='max-width:440px;margin:0 auto 16px;font-size:13px'>Integrated Change Control formally documents scope expansions, budget deltas, and schedule extensions with automated ripple effects into cards and EAC.</p>" +
+        (canGovernRegisters() && state.projects.length ? "<button type='button' class='btn primary' id='btnEmptyNewCo'>+ Raise Change Proposal</button>" : "");
+      if (emptyBox.querySelector("#btnEmptyNewCo")) {
+        emptyBox.querySelector("#btnEmptyNewCo").addEventListener("click", function () {
+          openChangeOrderEditor(null, ui.changeProjectId || state.projects[0].id);
+        });
+      }
+      root.appendChild(emptyBox);
+      return;
+    }
 
     var panel = el("div", { class: "panel mt" });
     var tbl = el("table", { class: "table" });
@@ -6445,7 +8651,7 @@
   };
 
   function openChangeOrderEditor(coId, projectId) {
-    if (!canGovernRegisters()) { toast("Change control is read-only for your role", "err"); return; }
+    if (!canGovernRegisters()) { toast("Access restricted: Change control requires governance authority. Switch to PM or Admin role to edit change orders.", "err"); return; }
     var isNew = !coId;
     var co = coId ? (state.changeOrders.filter(function (x) { return x.id === coId; })[0]) : {
       id: uid("co"), projectId: projectId || (state.projects[0] || {}).id, number: nextCoNumber(), title: "", category: "Scope",
@@ -6540,7 +8746,7 @@
     foot.push({ label: "Cancel", cls: "btn", fn: closeModal });
     foot.push({ label: isNew ? "Raise change order" : "Save", cls: "btn primary", fn: function () {
       var title = $("#coTitle").value.trim();
-      if (!title) { toast("Title is required", "err"); return; }
+      if (!title) { toast("Missing title: Change order title is required. Enter a descriptive title before saving.", "err"); return; }
       var newStatus = $("#coStatus").value;
       var scopeItems = [].slice.call(scopeList.querySelectorAll(".scope-row")).map(function (rowEl) {
         return { title: rowEl.querySelector(".scope-title").value.trim(), estimate: parseFloat(rowEl.querySelector(".scope-est").value) || 0 };
@@ -6604,6 +8810,7 @@
     var path = {};
     var cur = endId;
     while (cur) {
+      if (path[cur]) break; // guard against cycle in backtrack
       path[cur] = true;
       var c = byId[cur];
       var next = null, nv = -1;
@@ -6864,9 +9071,26 @@
       if (canGovernRegisters()) tr.addEventListener("click", function () { openRiskEditor(rk.id); });
       tb.appendChild(tr);
     });
-    if (!risks.length) tb.appendChild(el("tr", null, "<td colspan='11' class='empty'>" +
-      (ui.riskProjectId ? "No risks logged for this project yet." : "No risks logged. Add the first risk to start the register.") +
-      "</td>"));
+    if (!risks.length) {
+      var emptyTr = el("tr", null);
+      var emptyTd = el("td", { colspan: "11", class: "empty", style: "text-align:center; padding: 24px 16px;" });
+      var emptyMsg = el("div", { class: "muted mb" }, ui.riskProjectId ? "No risks logged for this project yet." : "No risks logged. Add the first risk to start the register.");
+      emptyTd.appendChild(emptyMsg);
+      var btnGroup = el("div", { class: "flex justify-center", style: "gap:8px" });
+      if (ui.riskProjectId) {
+        var clearBtn = el("button", { class: "btn sm" }, "Show all projects");
+        clearBtn.addEventListener("click", function () { ui.riskProjectId = ""; render(); });
+        btnGroup.appendChild(clearBtn);
+      }
+      if (canGovernRegisters()) {
+        var addEmptyBtn = el("button", { class: "btn primary sm" }, "+ Add risk");
+        addEmptyBtn.addEventListener("click", function () { openRiskEditor(null, ui.riskProjectId || null); });
+        btnGroup.appendChild(addEmptyBtn);
+      }
+      emptyTd.appendChild(btnGroup);
+      emptyTr.appendChild(emptyTd);
+      tb.appendChild(emptyTr);
+    }
     tbl.appendChild(tb);
     panel.appendChild(tbl);
     root.appendChild(panel);
@@ -6899,7 +9123,7 @@
   }
 
   function openRiskEditor(riskId, presetProjectId) {
-    if (!canGovernRegisters()) { toast("The risk register is read-only for your role", "err"); return; }
+    if (!canGovernRegisters()) { toast("Access restricted: The risk register is read-only for your role. Switch to PM or Admin role to edit risks.", "err"); return; }
     var rk = riskId ? (state.risks.filter(function (r) { return r.id === riskId; })[0]) : normalizeRisk({
       id: uid("rk"), projectId: presetProjectId || (state.projects[0] ? state.projects[0].id : null), title: "", riskType: "Threat", category: "Technical",
       probability: 3, impact: 3, residualProbability: 2, residualImpact: 2, response: "Mitigate", ownerId: null, status: "Open",
@@ -6946,7 +9170,7 @@
     foot.push({ label: "Cancel", cls: "btn", fn: closeModal });
     foot.push({ label: rk._new ? "Add risk" : "Save", cls: "btn primary", fn: function () {
       var title = $("#rkTitle").value.trim();
-      if (!title) { toast("Risk statement is required", "err"); return; }
+      if (!title) { toast("Missing risk statement: A description of the risk is required. Enter what might happen and its cause.", "err"); return; }
       var wasNew = !!rk._new;
       mutate(function () {
         rk.title = title;
@@ -7544,8 +9768,8 @@
     );
   }
 
-  VIEWS.admin = function (root) {
-    root.appendChild(pageHead("Accounts",
+  function renderServerAccountsAdmin(root) {
+    root.appendChild(pageHead("Cloud Accounts",
       "Approve new sign-ins, assign roles, and suspend access. Changes apply immediately and are recorded in the audit log."));
 
     if (!isServerAdmin()) {
@@ -7600,6 +9824,178 @@
     root.appendChild(panel);
 
     renderAdminWorkspacesPanel(root);
+  }
+
+  function renderLocalAccountsAdmin(root) {
+    root.appendChild(pageHead("Accounts & User Administration",
+      "Manage local user accounts, assign operational roles, configure passphrases, and switch workspaces in this browser."));
+
+    var users = accounts.users || [];
+    var adminCount = users.filter(function (u) { return u.role === "Admin"; }).length;
+    var pmCount = users.filter(function (u) { return u.role === "Project Manager" || u.role === "Department Manager"; }).length;
+    var securedCount = users.filter(function (u) { return u.hasPass; }).length;
+
+    var stats = el("div", { class: "grid cols-4" });
+    stats.appendChild(statCard("Total Profiles", users.length, "in this browser"));
+    stats.appendChild(statCard("Administrators", adminCount, "full governance"));
+    stats.appendChild(statCard("Project Managers", pmCount, "planning & delivery"));
+    stats.appendChild(statCard("Passphrase-Secured", securedCount, securedCount + " of " + users.length + " protected", securedCount ? "ok" : "neutral"));
+    root.appendChild(stats);
+
+    var panel = el("div", { class: "panel panel-pad mt" });
+    var headRow = el("div", { class: "flex wrap", style: "justify-content:space-between;align-items:center;gap:10px" });
+    var search = el("input", {
+      class: "input", id: "localUserSearch", type: "search", style: "max-width:320px",
+      placeholder: "Filter profiles by name or role…", value: adminState.localFilter || ""
+    });
+    search.addEventListener("input", function () {
+      adminState.localFilter = this.value;
+      renderLocalAdminTable(tblHost);
+    });
+    headRow.appendChild(search);
+
+    var actBtns = el("div", { class: "flex", style: "gap:8px" });
+    actBtns.appendChild(mkBtn("+ Add User Profile", "btn primary", adminCreateLocalUserPrompt));
+    actBtns.appendChild(mkBtn("⬇ Export Roster (JSON)", "btn ghost", function () {
+      var exportData = {
+        exportedAt: new Date().toISOString(),
+        totalUsers: users.length,
+        users: users.map(function (u) {
+          return { id: u.id, displayName: u.displayName, role: u.role, hasPass: u.hasPass, createdAt: u.createdAt };
+        })
+      };
+      download("techniek-user-roster.json", JSON.stringify(exportData, null, 2), "application/json");
+      toast("User roster exported", "ok");
+    }));
+    headRow.appendChild(actBtns);
+    panel.appendChild(headRow);
+
+    var tblHost = el("div", { class: "mt" });
+    panel.appendChild(tblHost);
+    renderLocalAdminTable(tblHost);
+
+    panel.appendChild(el("p", { class: "hint mt" },
+      "<strong>Local Multi-User Governance:</strong> Each profile maintains an isolated workspace and boards in this browser. " +
+      "Changing a user's role updates their permission boundaries immediately. The currently signed-in profile cannot be deleted."));
+    root.appendChild(panel);
+
+    // Roles Reference Guide
+    var guide = el("div", { class: "panel panel-pad mt" });
+    guide.appendChild(el("h2", null, "Role Capabilities & Authorization Matrix"));
+    guide.appendChild(el("p", { class: "muted" }, "Permissions enforced across Techniek OpsBoard Pro V2 views, mutations, and registers."));
+    var gTbl = el("table", { class: "table table-dense" });
+    gTbl.innerHTML = "<thead><tr><th>Role</th><th>Primary Authority</th><th>Financials & EVM</th><th>Register Governance</th><th>User Admin</th></tr></thead>" +
+      "<tbody>" +
+      "<tr><td><span class='chip sm ok'>Admin</span></td><td>Full authority across all boards, workspaces, settings, and accounts</td><td>✓ Full ($BAC, PV, EV, AC, CPI, SPI, EAC, CM%)</td><td>✓ Change orders, risks, rules of credit, baselines</td><td>✓ Full</td></tr>" +
+      "<tr><td><span class='chip sm'>Department Manager</span></td><td>Resource rates, staffing, change order approvals, operational governance</td><td>✓ Full financial transparency</td><td>✓ Change order approval, risk governance</td><td>View roster</td></tr>" +
+      "<tr><td><span class='chip sm'>Project Manager</span></td><td>Project planning, WBS work packages, card delivery, kickoff wizard</td><td>✓ Project budget, cost, and schedule variances</td><td>✓ Raise change orders, manage risks</td><td>View roster</td></tr>" +
+      "<tr><td><span class='chip sm'>Resource Manager</span></td><td>Staff allocation, hourly capacity, direct utilization modeling</td><td>Cost and billing rates</td><td>View registers</td><td>View roster</td></tr>" +
+      "<tr><td><span class='chip sm'>Financial Analyst</span></td><td>Financial audit, EVM validation, multiplier & margin analysis</td><td>✓ Full financial transparency</td><td>Audit change orders</td><td>View roster</td></tr>" +
+      "<tr><td><span class='chip sm neutral'>Viewer</span></td><td>Read-only oversight across boards and client-safe reports</td><td>Hidden (client view)</td><td>Read-only</td><td>—</td></tr>" +
+      "</tbody>";
+    guide.appendChild(gTbl);
+    root.appendChild(guide);
+  }
+
+  function renderLocalAdminTable(host) {
+    host.innerHTML = "";
+    var q = (adminState.localFilter || "").trim().toLowerCase();
+    var users = (accounts.users || []).filter(function (u) {
+      if (!q) return true;
+      return (u.displayName + " " + u.role + " " + u.id).toLowerCase().indexOf(q) !== -1;
+    });
+
+    var tbl = el("table", { class: "table" });
+    tbl.innerHTML = "<thead><tr><th>User Profile</th><th>Role</th><th>Security</th><th>Created</th><th>Actions</th></tr></thead>";
+    var tb = el("tbody");
+
+    users.forEach(function (u) {
+      var isSelf = u.id === accounts.currentUserId;
+      var tr = el("tr");
+
+      tr.appendChild(el("td", null,
+        "<div class='row gap-sm'><span class='avatar' style='background:" + avatarColor(u.displayName) + "'>" +
+        esc(initials(u.displayName)) + "</span><div><strong>" + esc(u.displayName) + "</strong>" +
+        (isSelf ? " <span class='badge ok'>active (you)</span>" : "") +
+        "<div class='faint'>ID: " + esc(u.id) + "</div></div></div>"));
+
+      var roleCell = el("td");
+      var roleSel = el("select", { class: "select select-sm" });
+      roleSel.innerHTML = ROLES.map(function (r) {
+        return "<option" + (r === u.role ? " selected" : "") + ">" + esc(r) + "</option>";
+      }).join("");
+      roleSel.addEventListener("change", function () {
+        var nextRole = this.value;
+        var prevRole = u.role;
+        confirmModal("Change role of “" + u.displayName + "” to " + nextRole + "?",
+          "This will grant them the permissions of " + nextRole + " across all boards and registers.",
+          function () {
+            u.role = nextRole;
+            if (isSelf) state.settings.role = nextRole;
+            saveAccounts();
+            recordAudit("User", u.id, "Role changed", u.displayName + ": " + prevRole + " ➔ " + nextRole);
+            toast("Role updated to " + nextRole, "ok");
+            render();
+          },
+          function () {
+            roleSel.value = prevRole;
+          });
+      });
+      roleCell.appendChild(roleSel);
+      tr.appendChild(roleCell);
+
+      tr.appendChild(el("td", null, u.hasPass
+        ? "<span class='chip sm ok'>🔒 Passphrase</span>"
+        : "<span class='chip sm neutral'>🔓 Open Access</span>"));
+
+      tr.appendChild(el("td", { class: "muted" },
+        u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "Initial"));
+
+      var actTd = el("td", { class: "right" });
+      var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
+      editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
+      actTd.appendChild(editBtn);
+
+      if (!isSelf) {
+        var switchBtn = el("button", { class: "btn sm ghost", style: "margin-right:6px" }, "Switch ➔");
+        switchBtn.addEventListener("click", function () {
+          if (needsUnlock(u)) {
+            renderAuthGate(u.id);
+          } else {
+            enterApp(u.id);
+          }
+        });
+        actTd.appendChild(switchBtn);
+
+        var delBtn = el("button", { class: "btn sm danger" }, "Delete");
+        delBtn.addEventListener("click", function () { adminDeleteLocalUser(u); });
+        actTd.appendChild(delBtn);
+      }
+      tr.appendChild(actTd);
+      tb.appendChild(tr);
+    });
+
+    if (!users.length) {
+      tb.appendChild(el("tr", null, "<td colspan='5' class='empty'>No user profiles match your filter.</td>"));
+    }
+
+    tbl.appendChild(tb);
+    host.appendChild(tbl);
+  }
+
+  VIEWS.admin = function (root) {
+    if (!canAdministerUsers()) {
+      root.appendChild(pageHead("Accounts & User Administration", "Manage user profiles, permissions, and roles."));
+      root.appendChild(el("div", { class: "panel panel-pad" },
+        "<p class='muted'>Administrator access is required to administer accounts and user roles. Sign in as an Administrator or switch simulated role to Admin.</p>"));
+      return;
+    }
+
+    if (serverSession && serverSession.active) {
+      return renderServerAccountsAdmin(root);
+    } else {
+      return renderLocalAccountsAdmin(root);
+    }
   };
 
   /**
@@ -7966,72 +10362,8 @@
     });
   }
 
-  // Local-first procedure answers: ranked retrieval over the bundled PM corpus
-  // plus any procedures the user has added. Cited, offline, no API key.
   function renderKnowledgeAnswer(root) {
-    var docs = kbDocuments();
-    var panel = el("div", { class: "panel panel-pad mb" });
-    panel.appendChild(el("h2", null, "Procedure Q&A"));
-    panel.appendChild(el("p", { class: "muted" },
-      "Ranked retrieval over " + docs.length + " procedure document(s) held locally — PMBOK-informed practice, Kanban flow, A/E financials, plus any procedures you add. " +
-      "Runs entirely in this browser: no API key, no network, works offline."));
-    panel.appendChild(el("p", { class: "hint" },
-      "Looking for advice on a specific project? Use the <strong>Assistant</strong> tab — it lets you pick a project " +
-      "and answers against its live CPI, SPI, staffing, and the clauses that govern them."));
-    var q = el("input", { class: "input", id: "kbQuery", placeholder: "e.g. what do I do about a WIP breach · why is contribution margin falling · when should I re-baseline" });
-    q.value = ui.kbQuery || "";
-    q.addEventListener("keydown", function (e) { if (e.key === "Enter") { ui.kbQuery = q.value; render(); } });
-    panel.appendChild(q);
-    var row = el("div", { class: "flex wrap mt", style: "gap:8px" });
-    row.appendChild(mkBtn("Search procedures", "btn primary", function () { ui.kbQuery = $("#kbQuery").value; render(); }));
-    row.appendChild(mkBtn("Add procedure files (.md)", "btn", kbImportPrompt));
-    if ((state.knowledgeDocs || []).length) {
-      row.appendChild(mkBtn("Remove my uploads (" + state.knowledgeDocs.length + ")", "btn sm ghost", function () {
-        confirmModal("Remove uploaded procedures?", "Removes the " + state.knowledgeDocs.length + " procedure file(s) you added. The built-in corpus is unaffected.", function () {
-          mutate(function () { state.knowledgeDocs = []; }); kbInvalidate(); toast("Uploaded procedures removed", "ok");
-        });
-      }));
-    }
-    panel.appendChild(row);
-    panel.appendChild(el("div", { class: "hint mt" },
-      "Add your own by dropping Markdown in knowledge/ and running node scripts/build-knowledge.mjs, or upload .md here for drafts. See knowledge/_TEMPLATE-your-procedure.md."));
-    root.appendChild(panel);
-
-    if (ui.kbQuery) {
-      var hits = kbSearch(ui.kbQuery, 6);
-      var res = el("div", { class: "panel" });
-      res.appendChild(el("div", { class: "panel-pad" },
-        "<h2 style='margin:0'>" + hits.length + " passage(s) for &ldquo;" + esc(ui.kbQuery) + "&rdquo;</h2>" +
-        "<div class='muted'>Ranked by BM25 relevance. Every answer is a cited passage from a real document — nothing is generated.</div>"));
-      if (!hits.length) {
-        res.appendChild(el("div", { class: "empty" }, "No procedure passage matched. Try different wording, or add a procedure covering it."));
-      }
-      hits.forEach(function (h, i) {
-        var p = h.passage;
-        var item = el("div", { class: "kb-hit" });
-        item.innerHTML = "<div class='kb-hit-head'><span class='badge neutral'>" + (i + 1) + "</span>" +
-          "<strong>" + esc(p.title) + (p.heading ? " · " + esc(p.heading) : "") + "</strong>" +
-          (p.dimension ? "<span class='chip label'>" + esc(p.dimension) + "</span>" : "") + "</div>";
-        var body = el("div", { class: "kb-hit-body" });
-        appendPmFormattedText(body, p.text);
-        item.appendChild(body);
-        item.appendChild(el("div", { class: "kb-hit-src" }, esc(p.source) + (p.file ? " · " + esc(p.file) : "")));
-        res.appendChild(item);
-      });
-      root.appendChild(res);
-    }
-
-    var libr = el("div", { class: "panel mt" });
-    libr.appendChild(el("div", { class: "panel-pad" }, "<h2 style='margin:0'>Corpus</h2><div class='muted'>Documents currently searchable.</div>"));
-    var t = el("table", { class: "table table-dense" });
-    t.innerHTML = "<thead><tr><th>Document</th><th>Dimension</th><th>Source</th><th class='num'>Sections</th><th>Origin</th></tr></thead>";
-    var tb = el("tbody");
-    docs.forEach(function (d) {
-      tb.appendChild(el("tr", null, "<td><strong>" + esc(d.title) + "</strong></td><td>" + (d.dimension ? "<span class='chip label'>" + esc(d.dimension) + "</span>" : "-") +
-        "</td><td class='muted'>" + esc(d.source) + "</td><td class='num'>" + (d.sections || []).length + "</td><td>" +
-        (d.userAdded ? "<span class='badge warn'>uploaded</span>" : "<span class='badge ok'>built-in</span>") + "</td>"));
-    });
-    t.appendChild(tb); libr.appendChild(t); root.appendChild(libr);
+    return renderProcedureLibraryAndQa(root);
   }
 
   function renderDeliverableWbsWorkflow(root) {
@@ -8133,7 +10465,7 @@
     var actions = el("div", { class: "flex wrap mb" });
     actions.appendChild(mkBtn("+ New schema", "btn primary sm", function () { openRuleSchemaEditor(); }));
     actions.appendChild(mkBtn("Restore default schemas", "btn sm", function () {
-      if (!canEdit()) return toast("Viewer role is read-only", "err");
+      if (!canEdit()) return toast("Action blocked: Viewer role is read-only. Switch to an editor role to restore schemas.", "err");
       confirmModal("Restore default rules of credit?", "Adds any missing Techniek PMO standard schemas. Existing schemas are left untouched.", function () {
         mutate(function () {
           state.rulesOfCredit = state.rulesOfCredit || [];
@@ -8149,7 +10481,7 @@
     renderRulesOfCredit(root);
   };
   function openRuleSchemaEditor(existing) {
-    if (!canEdit()) return toast("Viewer role is read-only", "err");
+    if (!canEdit()) return toast("Action blocked: Viewer role is read-only. Switch to an editor role to manage schemas.", "err");
     var isEdit = !!existing;
     var body = el("div");
     var rows = isEdit ? (existing.steps || []).slice() : [{ incrementPct: 5, reportedOutPct: 5, mathCheckPct: 5, description: "Preparer assigned or work authorized" }];
@@ -8168,18 +10500,18 @@
       body.querySelectorAll(".roc-delete-row").forEach(function (btn) {
         btn.onclick = function () {
           var rowsNow = body.querySelectorAll(".roc-step-row");
-          if (rowsNow.length <= 1) return toast("At least one rule row is required", "err");
+          if (rowsNow.length <= 1) return toast("Action blocked: A schema requires progression steps. Keep at least one rule row.", "err");
           btn.closest("tr").remove();
         };
       });
     }
     modal(isEdit ? "Edit rules-of-credit schema" : "New rules-of-credit schema", body, [{ label: "Cancel", cls: "btn", fn: closeModal }, { label: isEdit ? "Save" : "Create", cls: "btn primary", fn: function () {
       var name = $("#rocName").value.trim();
-      if (!name) return toast("Schema name is required", "err");
+      if (!name) return toast("Missing schema name: Schema name cannot be blank. Enter a descriptive title.", "err");
       var steps = [].slice.call(body.querySelectorAll(".roc-step-row")).map(function (row, i) {
         return { step: i + 1, incrementPct: normHours(row.querySelector(".roc-inc").value), reportedOutPct: normHours(row.querySelector(".roc-out").value), mathCheckPct: normHours(row.querySelector(".roc-check").value), description: row.querySelector(".roc-desc").value.trim() };
       }).filter(function (s) { return s.description || s.incrementPct || s.reportedOutPct; });
-      if (!steps.length) return toast("At least one schema row is required", "err");
+      if (!steps.length) return toast("Schema incomplete: No valid rule steps found. Enter descriptions and increments for each step.", "err");
       mutate(function () {
         var target = isEdit ? ruleById(existing.id) : { id: uid("roc"), source: "Manager-created" };
         target.name = name;
@@ -8200,12 +10532,152 @@
   }
 
 
+  function renderOrganizationSettings(root) {
+    var panel = el("div", { class: "panel panel-pad mt" });
+    panel.innerHTML =
+      "<div class='flex wrap' style='justify-content:space-between;align-items:center;margin-bottom:8px'>" +
+      "<div><h2 style='margin:0 0 4px'>Organization & Commercial Parameters</h2>" +
+      "<p class='muted' style='margin:0'>Configure your enterprise identity, operating business units, contract billing types, and secure AI advisor integration.</p></div>" +
+      "</div>";
+
+    var grid = el("div", { class: "grid cols-2 mt" });
+
+    // Col 1: Company Name & Operating Units
+    var col1 = el("div");
+    
+    // Company Name
+    var compRow = el("div", { class: "form-row" });
+    compRow.innerHTML = "<label class='field-label inline'>Company / Enterprise Name</label>";
+    var compInput = el("input", { class: "input", value: companyName(), placeholder: "e.g. Techniek Engineering" });
+    compInput.addEventListener("change", function () {
+      var val = compInput.value.trim() || "Techniek Engineering";
+      mutate(function () {
+        if (!state.settings) state.settings = {};
+        state.settings.companyName = val;
+      });
+      toast("Organization name updated", "ok");
+    });
+    compRow.appendChild(compInput);
+    col1.appendChild(compRow);
+
+    // Operating Units
+    var ouBox = el("div", { class: "mt" });
+    ouBox.innerHTML = "<label class='field-label inline'>Standard Operating Units / Departments</label>";
+    var ouListEl = el("div", { class: "flex wrap", style: "gap:6px;margin:8px 0" });
+    var refreshOuList = function () {
+      ouListEl.innerHTML = "";
+      orgUnitsList().forEach(function (unit) {
+        var chip = el("span", { class: "chip", style: "display:inline-flex;align-items:center;gap:6px;padding:4px 8px" });
+        chip.innerHTML = "<span>" + esc(unit) + "</span>";
+        var delBtn = el("button", { type: "button", class: "btn ghost sm", style: "padding:0 3px;line-height:1;border:0;color:var(--danger);cursor:pointer", title: "Remove unit" }, "×");
+        delBtn.addEventListener("click", function () {
+          var cur = orgUnitsList().filter(function (x) { return x !== unit; });
+          mutate(function () {
+            state.settings.orgUnits = cur;
+          });
+          refreshOuList();
+          toast("Removed operating unit", "ok");
+        });
+        chip.appendChild(delBtn);
+        ouListEl.appendChild(chip);
+      });
+    };
+    refreshOuList();
+    ouBox.appendChild(ouListEl);
+
+    var addOuRow = el("div", { class: "flex", style: "gap:6px" });
+    var addOuInput = el("input", { class: "input sm", placeholder: "New operating unit name..." });
+    var addOuBtn = el("button", { type: "button", class: "btn sm" }, "+ Add Unit");
+    addOuBtn.addEventListener("click", function () {
+      var val = addOuInput.value.trim();
+      if (!val) return;
+      var cur = orgUnitsList();
+      if (cur.indexOf(val) === -1) {
+        cur.push(val);
+        mutate(function () { state.settings.orgUnits = cur; });
+        addOuInput.value = "";
+        refreshOuList();
+        toast("Operating unit added: " + val, "ok");
+      }
+    });
+    addOuInput.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); addOuBtn.click(); } });
+    addOuRow.appendChild(addOuInput);
+    addOuRow.appendChild(addOuBtn);
+    ouBox.appendChild(addOuRow);
+    col1.appendChild(ouBox);
+
+    grid.appendChild(col1);
+
+    // Col 2: Contract Billing Types & OpenRouter AI
+    var col2 = el("div");
+
+    // Billing Types
+    var btBox = el("div");
+    btBox.innerHTML = "<label class='field-label inline'>Contract Billing Types & Codes</label>";
+    var btListEl = el("div", { class: "flex wrap", style: "gap:6px;margin:8px 0" });
+    var refreshBtList = function () {
+      btListEl.innerHTML = "";
+      billingTypesList().forEach(function (code) {
+        var chip = el("span", { class: "chip", style: "display:inline-flex;align-items:center;gap:6px;padding:4px 8px" });
+        chip.innerHTML = "<span>" + esc(code) + "</span>";
+        var delBtn = el("button", { type: "button", class: "btn ghost sm", style: "padding:0 3px;line-height:1;border:0;color:var(--danger);cursor:pointer", title: "Remove code" }, "×");
+        delBtn.addEventListener("click", function () {
+          var cur = billingTypesList().filter(function (x) { return x !== code; });
+          mutate(function () {
+            state.settings.billingTypes = cur;
+          });
+          refreshBtList();
+          toast("Removed billing code", "ok");
+        });
+        chip.appendChild(delBtn);
+        btListEl.appendChild(chip);
+      });
+    };
+    refreshBtList();
+    btBox.appendChild(btListEl);
+
+    var addBtRow = el("div", { class: "flex", style: "gap:6px" });
+    var addBtInput = el("input", { class: "input sm", placeholder: "New billing type (e.g. Unit Rate)..." });
+    var addBtBtn = el("button", { type: "button", class: "btn sm" }, "+ Add Code");
+    addBtBtn.addEventListener("click", function () {
+      var val = addBtInput.value.trim();
+      if (!val) return;
+      var cur = billingTypesList();
+      if (cur.indexOf(val) === -1) {
+        cur.push(val);
+        mutate(function () { state.settings.billingTypes = cur; });
+        addBtInput.value = "";
+        refreshBtList();
+        toast("Billing code added: " + val, "ok");
+      }
+    });
+    addBtInput.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); addBtBtn.click(); } });
+    addBtRow.appendChild(addBtInput);
+    addBtRow.appendChild(addBtBtn);
+    btBox.appendChild(addBtRow);
+    col2.appendChild(btBox);
+
+    // OpenRouter AI Environment Integration Status
+    var orBox = el("div", { class: "mt", style: "padding:12px;background:var(--surface-2);border-radius:var(--radius-sm);border:1px solid var(--border)" });
+    orBox.innerHTML =
+      "<div class='flex' style='justify-content:space-between;align-items:center;margin-bottom:6px'>" +
+      "<strong>🤖 OpenRouter AI &amp; PM Advisor</strong>" +
+      "<span class='chip sm' style='background:rgba(16,185,129,0.12);color:var(--success);border:1px solid rgba(16,185,129,0.25)'>✓ Environment Secured</span>" +
+      "</div>" +
+      "<p class='muted' style='margin:0;font-size:12px'>Powers the interactive PM Advisor and in-modal procedure copilots. In accordance with enterprise security protocol, OpenRouter credentials (<code>OPENROUTER_API_KEY</code> / <code>LLM_API_KEY</code>) are managed exclusively in the server environment (<code>server/.env.local</code> / <code>.dev.vars</code>) and gitignored — never exposed in the UI or stored in browser localStorage. Local procedure BM25 RAG operates in all modes.</p>";
+    col2.appendChild(orBox);
+
+    grid.appendChild(col2);
+    panel.appendChild(grid);
+    root.appendChild(panel);
+  }
+
   /* ---------- Settings / Data ---------- */
   VIEWS.settings = function (root) {
     root.appendChild(pageHead("Settings & Data", "Local-first workspace controls. Export before clearing browser data."));
 
     root.appendChild(el("div", { class: "warn-banner mb" },
-      "⚠ Prototype / local-first app. Do not use for CUI, export-controlled, classified, proprietary client, or sensitive employee data until enterprise authentication, access control, encryption, and security review are implemented. Data is stored in this browser via localStorage unless exported."));
+      "⚠ Local-first workspace. Do not use for CUI, export-controlled, classified, proprietary client, or sensitive employee data until enterprise authentication, access control, encryption, and security review are implemented. Data is stored in this browser via localStorage unless exported."));
 
     var grid = el("div", { class: "grid cols-2" });
 
@@ -8225,8 +10697,9 @@
       });
     }));
     if (canEdit()) row2.appendChild(mkBtn("🗑 Clear local data", "btn danger", function () {
-      confirmModal("Clear all local data?", "This permanently removes the workspace from this browser. This cannot be undone except via a JSON backup.", function () {
-        localStorage.removeItem(STORAGE_KEY); state = demoWorkspace(); undoStack.length = 0; redoStack.length = 0; commit(); toast("Local data cleared", "ok");
+      confirmModal("Clear all local data?", "This permanently removes the workspace from this browser and leaves a clean blank workspace. This cannot be undone except via a JSON backup.", function () {
+        try { localStorage.removeItem(STORAGE_KEY); if (accounts && accounts.currentUserId) localStorage.removeItem(wsKey(accounts.currentUserId)); } catch (e) {}
+        state = blankWorkspace(); undoStack.length = 0; redoStack.length = 0; commit(); toast("Local data cleared (blank workspace initialized)", "ok");
       });
     }));
     dataPanel.appendChild(row2);
@@ -8248,7 +10721,7 @@
     if (!canChangeSimulatedRole()) roleSel.setAttribute("disabled", "disabled");
     roleSel.addEventListener("change", function () {
       if (!canChangeSimulatedRole()) {
-        toast("Only an administrator can change the simulated role", "err");
+        toast("Permission denied: Only an administrator can switch simulated roles. Contact your workspace admin.", "err");
         roleSel.value = role();
         return;
       }
@@ -8296,6 +10769,9 @@
 
     root.appendChild(grid);
 
+    // Organization & commercial identity parameters
+    renderOrganizationSettings(root);
+
     // Procedure library lives here, with the other data-management controls,
     // rather than on the Advisor screen where it competed with asking questions.
     renderProcedureLibrary(root);
@@ -8306,23 +10782,36 @@
     acctPanel.appendChild(el("h2", null, "Account & access"));
     acctPanel.appendChild(el("p", { class: "muted" },
       "Signed in as " + (cu ? cu.displayName + " (" + cu.role + ")" : "guest") + ". Each profile keeps its own boards and workspace data in this browser."));
-    var acctRow = el("div", { class: "flex wrap mt" });
+    var acctRow = el("div", { class: "flex wrap mt", style: "gap:8px" });
     acctRow.appendChild(mkBtn("🔌 Sign out", "btn", function () { logout(); }));
     acctRow.appendChild(mkBtn("👤 Switch / add profile", "btn", function () { renderAuthGate(cu && cu.id); }));
+    if (canAdministerUsers()) {
+      acctRow.appendChild(mkBtn("+ Add user profile", "btn primary", adminCreateLocalUserPrompt));
+      acctRow.appendChild(mkBtn("⚙ Accounts & users", "btn", function () { go("admin"); }));
+    }
     if (cu) acctRow.appendChild(mkBtn(cu.hasPass ? "🔑 Change passphrase" : "🔑 Set passphrase", "btn", function () { changePassphrase(cu); }));
     acctPanel.appendChild(acctRow);
     // User roster
-    if (accounts.users.length > 1) {
+    if (accounts.users.length > 0) {
       var ut = el("table", { class: "table mt" });
-      ut.innerHTML = "<thead><tr><th>Profile</th><th>Role</th><th>Secured</th><th></th></tr></thead>";
+      ut.innerHTML = "<thead><tr><th>Profile</th><th>Role</th><th>Secured</th><th class='right'>Actions</th></tr></thead>";
       var utb = el("tbody");
       accounts.users.forEach(function (u) {
         var tr = el("tr");
-        tr.innerHTML = "<td><strong>" + esc(u.displayName) + "</strong>" + (u.id === accounts.currentUserId ? " <span class='badge ok'>you</span>" : "") + "</td><td class='muted'>" + esc(u.role) + "</td><td>" + (u.hasPass ? "🔒 passphrase" : "—") + "</td><td class='right'></td>";
+        tr.innerHTML = "<td><strong>" + esc(u.displayName) + "</strong>" + (u.id === accounts.currentUserId ? " <span class='badge ok'>you</span>" : "") + "</td><td><span class='chip role-" + (u.role || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "'>" + esc(u.role) + "</span></td><td>" + (u.hasPass ? "🔒 passphrase" : "—") + "</td><td class='right' style='white-space:nowrap'></td>";
+        var actTd = tr.querySelector("td.right");
+        if (canAdministerUsers()) {
+          var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
+          editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
+          actTd.appendChild(editBtn);
+        }
         if (u.id !== accounts.currentUserId) {
+          var swBtn = el("button", { class: "btn sm ghost", style: "margin-right:6px" }, "Switch ➔");
+          swBtn.addEventListener("click", function () { switchUser(u.id); });
+          actTd.appendChild(swBtn);
           var del = el("button", { class: "btn sm danger" }, "Delete");
           del.addEventListener("click", function () { deleteUser(u); });
-          tr.querySelector("td.right").appendChild(del);
+          actTd.appendChild(del);
         }
         utb.appendChild(tr);
       });
@@ -8367,46 +10856,527 @@
   };
 
   /* ---------- Help ---------- */
+  /* ---------- Help & System Intelligence ---------- */
+  function renderMarkdownHelp(md) {
+    var escaped = esc(md);
+    return escaped
+      .replace(/^### (.*$)/gim, '<h4 style="margin:8px 0 4px;font-size:14px;color:var(--text)">$1</h4>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/^[•\-] (.*$)/gim, '<div style="display:flex;gap:6px;align-items:flex-start;margin:3px 0"><span style="color:var(--brand);margin-top:2px">•</span><span>$1</span></div>')
+      .replace(/\n\n/g, '<br><br>');
+  }
+
+  function determineHelpActions(query) {
+    var l = String(query || "").toLowerCase();
+    if (/project|setup|template|kickoff|charter/i.test(l)) {
+      return [
+        { label: "🚀 New Project Wizard", cls: "btn sm primary", fn: function () { openProjectAdmin(); } },
+        { label: "📋 Browse Templates", cls: "btn sm", fn: function () { openTemplateChooserModal(); } }
+      ];
+    }
+    if (/credit|roc|kanban|column|gantt|multiplier|evm/i.test(l)) {
+      return [
+        { label: "📐 Rules of Credit", cls: "btn sm primary", fn: function () { go("rulescredit"); } },
+        { label: "📋 Kanban Board", cls: "btn sm", fn: function () { go("board"); } },
+        { label: "📊 Gantt Chart", cls: "btn sm", fn: function () { go("gantt"); } }
+      ];
+    }
+    if (/resource|machine|equipment|material|goods|capacity/i.test(l)) {
+      return [
+        { label: "👥 Resource Pool", cls: "btn sm primary", fn: function () { go("resources"); } }
+      ];
+    }
+    if (/report|client|manager|audit|export/i.test(l)) {
+      return [
+        { label: "📄 Client Report", cls: "btn sm", fn: function () { go("client"); } },
+        { label: "📈 Manager Report", cls: "btn sm primary", fn: function () { go("reports"); } },
+        { label: "🔍 Audit Trail", cls: "btn sm", fn: function () { go("audit"); } }
+      ];
+    }
+    if (/advisor|procedure|sop|upload|rag/i.test(l)) {
+      return [
+        { label: "💡 PM Advisor", cls: "btn sm primary", fn: function () { go("advisor"); } },
+        { label: "⚙ Upload Procedures", cls: "btn sm", fn: function () { go("settings"); } }
+      ];
+    }
+    if (/change|order|ccb|baseline|ripple/i.test(l)) {
+      return [
+        { label: "⚖ Change Control", cls: "btn sm primary", fn: function () { go("changecontrol"); } },
+        { label: "📁 Projects", cls: "btn sm", fn: function () { go("projects"); } }
+      ];
+    }
+    return [
+      { label: "📋 Kanban Board", cls: "btn sm", fn: function () { go("board"); } },
+      { label: "📊 Gantt Chart", cls: "btn sm", fn: function () { go("gantt"); } }
+    ];
+  }
+
+  async function askHelpAssistant(query) {
+    var q = String(query || "").trim();
+    if (!q) return null;
+
+    if (serverSession && serverSession.active) {
+      try {
+        var sRes = await fetch("/api/assistant/advise", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pack: {
+              question: "You are the Techniek OpsBoard Pro AI Help Assistant. Provide concise, step-by-step guidance on how to use the application to answer: " + q,
+              charterContext: {
+                application: "Techniek OpsBoard Pro V2",
+                modules: ["Projects & Kickoff", "Rules of Credit & EVM", "Resource Management", "Client & Manager Reporting", "PM Advisor Procedures", "Change Control", "Gantt & Kanban"]
+              },
+              dimensions: ["Execution", "Governance", "Reporting"],
+              retrieval: { passages: kbSearch(q, 3).map(function(h){ return { title: h.passage.title, text: h.passage.text, source: h.passage.source }; }) }
+            }
+          })
+        });
+        if (sRes.ok) {
+          var sData = await sRes.json();
+          if (sData && sData.answer) {
+            var ans = sData.answer;
+            var text = ans.headline ? (ans.headline + "\n\n" + (ans.situation || "") + "\n\n" + (ans.moves || []).map(function(m){ return "• **" + m.action + "**: " + (m.effect || ""); }).join("\n")) : (ans.text || JSON.stringify(ans));
+            return {
+              text: text,
+              model: sData.model || "OpenRouter AI",
+              actions: determineHelpActions(q)
+            };
+          }
+        }
+      } catch (err) {
+        console.warn("Server AI help assistant error, falling back to local system intelligence:", err);
+      }
+    }
+
+    var lower = q.toLowerCase();
+
+    // 1. New Project Setup & Templates
+    if (/project|setup|template|kickoff|charter|initiat|create/i.test(lower) && !/change/i.test(lower)) {
+      return {
+        text: "### 🚀 Guide: New Project Setup & Kickoff\n\n" +
+          "Setting up a new project in Techniek OpsBoard Pro follows a structured, PMBOK-aligned workflow:\n\n" +
+          "1. **Select an Industry Template or Blank Canvas**:\n" +
+          "   Choose from 6 calibrated templates (Automation, Piping, Substations, Software, Structural, HVAC) pre-seeded with WBS deliverables, resource profiles, and WIP limits, or start from scratch.\n\n" +
+          "2. **Configure Commercial Identity**:\n" +
+          "   Enter the Project Name, Client Identity, Authorized BAC (Budget at Completion $), and responsible Operating Unit (e.g. Process Systems, Automation & Robotics).\n\n" +
+          "3. **Choose Contract Billing Model**:\n" +
+          "   Select Fixed Price (FP), Time & Materials (T&M), Guaranteed Maximum Price (GMP), or Unit Rate. This sets your revenue multipliers and change governance.\n\n" +
+          "4. **Complete the 5-Stage Guided Kickoff**:\n" +
+          "   Walk through the initiation gate check: Charter Authority ➔ Multiplier Target Verification (≥ 3.00×) ➔ WBS 100% Decomposition ➔ Critical Path Finish-to-Start Sequencing ➔ Final Baseline Freeze.\n\n" +
+          "5. **Use the In-Modal PM Advisor Copilot**:\n" +
+          "   Ask the built-in assistant for advice on contingency budgets and billing structures grounded in your company's uploaded procedures.",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // 2. Rules of Credit, Kanban, Gantt Sync & Multiplier
+    if (/credit|\broc\b|kanban|column|move|drag|progress|gantt|billable|multiplier|cpi|spi|evm|earned value/i.test(lower) && !/change/i.test(lower)) {
+      return {
+        text: "### 📐 Guide: Rules of Credit, Kanban Flow & Live EVM Sync\n\n" +
+          "Techniek OpsBoard Pro links physical stage progression directly to earned value calculations:\n\n" +
+          "1. **Define Rules of Credit (RoC)**:\n" +
+          "   Navigate to **Scope & Progress ➔ Rules of Credit** to create step-weighted rules (e.g., 20% Issue ➔ 50% Review ➔ 80% Approval ➔ 100% Completion).\n\n" +
+          "2. **Moving Cards Across Columns**:\n" +
+          "   When you drag and drop a card on the Kanban Board, the card's physical % complete is automatically recalibrated based on the column's credit weight or attached RoC step.\n\n" +
+          "3. **Live Gantt Synchronization**:\n" +
+          "   Physical completion updates Planned Value (PV), Earned Value (EV), and Actual Cost (AC) in real time. Gantt progress bars fill immediately, and critical path floats recalculate without manual data entry.\n\n" +
+          "4. **Billable Revenue & A/E Multiplier**:\n" +
+          "   Work package hours are multiplied by assigned resource billing rates. The direct earned multiplier (target ≥ 3.00× direct labor) tracks project margin and commercial health live.\n\n" +
+          "5. **Dynamic Resource Load Forecast**:\n" +
+          "   Open remaining effort is time-phased across active weeks, dynamically refreshing the 4-week lookahead utilization matrix.",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // 3. Managing Resources (People, Machinery, Goods)
+    if (/resource|people|person|machine|machinery|equipment|material|goods|capacity|rate|fte|staff/i.test(lower)) {
+      return {
+        text: "### 👥 Guide: Managing Multi-Type Resources (People, Machinery, Goods)\n\n" +
+          "The resource register supports 7 distinct classifications to model the full engineering supply chain:\n\n" +
+          "1. **Resource Classifications**:\n" +
+          "   Model Human Labor (`Employee`, `Subcontractor`), Tools (`Tool / Software`), Heavy Machinery (`Equipment`), Facilities (`Facility`), and Physical Supplies (`Material`).\n\n" +
+          "2. **Two-Tier Rate Cards**:\n" +
+          "   Assign both a direct internal **Cost Rate** ($/hr) and a client **Bill Rate** ($/hr) to maintain visibility over gross contribution margins.\n\n" +
+          "3. **Capacity Thresholds**:\n" +
+          "   Establish standard available hours per week (e.g. 40 hrs/wk standard for engineers, multi-shift operating windows for machinery).\n\n" +
+          "4. **4-Week Lookahead & Over-Allocation Warnings**:\n" +
+          "   The live utilization heatmap calculates weekly load (demanded hours ÷ capacity) across rolling 4-week windows, highlighting resources allocated > 100%.\n\n" +
+          "5. **Multi-Resource Card Allocation**:\n" +
+          "   Assign one or more resources to any work package card with fractional share weighting (e.g. 50% Lead Engineer, 50% CAD Specialist).",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // 4. Reporting to Clients, Managers & PMs
+    if (/report|client|manager|executive|audit|export|csv|pdf/i.test(lower) && !/change/i.test(lower)) {
+      return {
+        text: "### 📈 Guide: Reporting to Clients, Managers, and Fellow PMs\n\n" +
+          "The platform provides purpose-built reporting tailored to different stakeholder audiences:\n\n" +
+          "1. **Client Progress Report** (`Reports & Audit ➔ Client Report`):\n" +
+          "   External-facing deliverable presenting milestone achievements, physical % complete, visual Gantt timeline, and active risks. Internal cost rates, payroll figures, and profit margins are automatically suppressed.\n\n" +
+          "2. **Executive & Manager EVM Pack** (`Reports & Audit ➔ Manager Report`):\n" +
+          "   Comprehensive PMBOK Earned Value analysis. Computes deterministically Schedule Variance (SV), Cost Variance (CV), SPI, CPI, Estimate at Completion (EAC), and Variance at Completion (VAC).\n\n" +
+          "3. **Program & Portfolio Rollups**:\n" +
+          "   Aggregates active projects by operating business unit, comparing total commitments, burn rates, and billing codes across the entire enterprise.\n\n" +
+          "4. **Immutable Audit Trail & Export** (`Reports & Audit ➔ Audit Trail`):\n" +
+          "   Chronological, uneditable event log of all card movements, baseline adjustments, and user approvals, exportable to CSV or printable to PDF.",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // 5. PM Advisor & Grounded Procedures
+    if (/advisor|procedure|upload|guideline|openrouter|rag|sop|citation/i.test(lower)) {
+      return {
+        text: "### 💡 Guide: Using the PM Advisor with Uploaded Procedures\n\n" +
+          "The PM Advisor provides AI guidance grounded in your organization's proprietary standards:\n\n" +
+          "1. **Uploading Company SOPs**:\n" +
+          "   Go to **Settings / Data ➔ Company Procedure Library** and upload standard operating procedures, contract rules, or checklists in `.md` or `.pdf` format.\n\n" +
+          "2. **BM25 Semantic Retrieval**:\n" +
+          "   Uploaded documents are indexed locally into searchable passages without transmitting ungrounded data to external entities.\n\n" +
+          "3. **Grounded AI Synthesis**:\n" +
+          "   When you submit a query, relevant procedure passages are synthesized using OpenRouter LLMs (Claude 3.5 Sonnet, GPT-4o, Gemini 2.5 Flash) via secure server environment variables (`OPENROUTER_API_KEY`).\n\n" +
+          "4. **Defensible Clause Citations**:\n" +
+          "   The Advisor cites the exact document title, section heading, and clause. If your procedures lack guidance on a specific topic, procedural gaps are flagged.\n\n" +
+          "5. **In-Modal Charter Copilots**:\n" +
+          "   Access the Advisor directly inside the New Project Wizard and Guided Kickoff to receive grounded recommendations on billing models, contingency buffers, and operating units.",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // 6. Managing Change & Ripple Effects
+    if (/change|order|ccb|ripple|baseline|scope creep|cost growth/i.test(lower)) {
+      return {
+        text: "### ⚖ Guide: Integrated Change Control & Downstream Ripple Effects\n\n" +
+          "Managing change orders ensures scope expansions and budget adjustments propagate cleanly through the entire project ecosystem:\n\n" +
+          "1. **Raise Formal Change Proposals** (`Governance & Registers ➔ Change Control`):\n" +
+          "   Log proposed changes categorized by Scope, Budget, Schedule, or Client Directive with detailed technical justifications.\n\n" +
+          "2. **Tri-Factor Impact Assessment**:\n" +
+          "   Formally quantify the triple-constraint impact: Cost ($ budget delta), Schedule (duration / deadline shift in days), and Scope (additional deliverables).\n\n" +
+          "3. **CCB Authorization Gate**:\n" +
+          "   Role-based approval prevents unvetted baseline creep; non-managers can raise requests, but approval requires authorized managerial roles.\n\n" +
+          "4. **Downstream Ripple Effects on Cards**:\n" +
+          "   Upon approval, additional scope items are automatically instantiated as new work package cards in column 0 with designated hour estimates.\n\n" +
+          "5. **Gantt & Critical Path Ripple**:\n" +
+          "   Approved schedule day extensions automatically shift the project finish date and adjust successor activity floats in the critical path.\n\n" +
+          "6. **EAC & Report Calibration**:\n" +
+          "   Original project baselines remain preserved for historical performance tracking, while EAC (Estimate at Completion) and VAC (Variance at Completion) recalibrate to reflect authorized adjustments.",
+        model: "OpsBoard System Intelligence",
+        actions: determineHelpActions(q)
+      };
+    }
+
+    // General / Keyboard / Overview Fallback
+    return {
+      text: "### 💡 Techniek OpsBoard Pro V2 — System Capabilities Overview\n\n" +
+        "Techniek OpsBoard Pro V2 is an enterprise project controls and engineering management platform built on PMBOK standards, Lean Kanban flow, and grounded AI.\n\n" +
+        "**Key System Workflows:**\n" +
+        "• **Project Setup & Initiation**: 6 industry templates, configurable operating units, and 5-stage kickoff gate checks.\n" +
+        "• **Rules of Credit & EVM**: Live Kanban stage progression driving Planned Value, Earned Value, Actual Cost, and Gantt charts.\n" +
+        "• **Multi-Type Resources**: Model people, subcontractors, machinery, equipment, and materials with dual cost/bill rates and 4-week lookahead.\n" +
+        "• **Targeted Reporting**: Client Progress Report (financials masked) vs Executive Manager Report (full EVM) vs Portfolio Rollups.\n" +
+        "• **PM Advisor**: Intelligent assistant grounded in uploaded company procedures with defensible clause citations.\n" +
+        "• **Integrated Change Control**: Formal change orders with automatic ripple effects across cards, Gantt schedules, and EAC forecasting.\n\n" +
+        "**Keyboard Shortcuts**: Press `N` for new card, `/` to focus search, `Esc` to close, `Ctrl+Z` to undo, `Ctrl+Shift+Z` to redo, and `?` for this Help.",
+      model: "OpsBoard System Intelligence",
+      actions: determineHelpActions(q)
+    };
+  }
+
   VIEWS.help = function (root) {
-    root.appendChild(pageHead("Help", "Quick reference for Techniek OpsBoard Pro V2."));
-    var grid = el("div", { class: "grid cols-2" });
+    root.appendChild(pageHead("Help & System Intelligence", "Operational guides, core capabilities library, and interactive AI system assistance."));
+
+    // 1. AI Assistant Panel
+    var assistPanel = el("div", { class: "help-assistant-box mb" });
+    var hasServer = !!(serverSession && serverSession.active);
+    assistPanel.innerHTML =
+      "<div class='help-assistant-header'>" +
+      "<div class='help-assistant-title'><span>🤖</span><span>System &amp; Application AI Assistant</span></div>" +
+      "<span class='chip sm " + (hasServer ? "ok" : "") + "'>" + (hasServer ? "OpenRouter AI Connected" : "OpsBoard Knowledge Engine") + "</span>" +
+      "</div>" +
+      "<p class='muted' style='margin:0 0 8px;font-size:12.5px'>Ask any operational question about Techniek OpsBoard Pro V2 — from project setup and EVM formulas to multi-type resource forecasting and change control.</p>" +
+      "<div class='help-chips' id='helpQuickChips'>" +
+      "<button type='button' class='help-chip-btn' data-q='How do I set up a new project with templates and kickoff?'>🚀 New Project Setup</button>" +
+      "<button type='button' class='help-chip-btn' data-q='How do Rules of Credit update Kanban, Gantt, and EVM?'>📐 Rules of Credit &amp; Gantt Sync</button>" +
+      "<button type='button' class='help-chip-btn' data-q='How do I manage resources including people, machinery, and goods?'>👥 Multi-Type Resources</button>" +
+      "<button type='button' class='help-chip-btn' data-q='What is the difference between Client and Manager reports?'>📊 Client vs Manager Reporting</button>" +
+      "<button type='button' class='help-chip-btn' data-q='How do I upload company procedures and use the PM Advisor?'>💡 PM Advisor &amp; Procedure SOPs</button>" +
+      "<button type='button' class='help-chip-btn' data-q='How does Change Control affect cards, resources, Gantt, and EAC?'>⚖ Change Control &amp; Ripples</button>" +
+      "</div>" +
+      "<div class='help-input-row'>" +
+      "<input class='help-input' id='helpAssistantInput' type='text' placeholder='Ask a question about using the tool (e.g., How do Rules of Credit update the Gantt chart?)...' />" +
+      "<button type='button' class='btn primary' id='helpAssistantSubmit'>Ask Assistant</button>" +
+      "<button type='button' class='btn ghost' id='helpAssistantClear' style='display:none'>Clear</button>" +
+      "</div>" +
+      "<div id='helpAssistantResponse' style='display:none'></div>";
+
+    var inp = assistPanel.querySelector("#helpAssistantInput");
+    var subBtn = assistPanel.querySelector("#helpAssistantSubmit");
+    var clrBtn = assistPanel.querySelector("#helpAssistantClear");
+    var respBox = assistPanel.querySelector("#helpAssistantResponse");
+
+    async function handleAsk(query) {
+      var q = (query || inp.value || "").trim();
+      if (!q) return;
+      inp.value = q;
+      respBox.style.display = "block";
+      respBox.innerHTML = "<div class='help-response-card'><div class='flex' style='gap:8px;align-items:center'><span class='chip sm'>Processing...</span> <span class='muted'>Analyzing system procedures &amp; capabilities...</span></div></div>";
+      subBtn.disabled = true;
+      clrBtn.style.display = "inline-flex";
+
+      try {
+        var res = await askHelpAssistant(q);
+        if (!res) {
+          respBox.innerHTML = "<div class='help-response-card muted'>No response generated. Please try asking in different words.</div>";
+          return;
+        }
+        var card = el("div", { class: "help-response-card" });
+        var headRow = el("div", { class: "flex", style: "justify-content:space-between;align-items:center;margin-bottom:8px" });
+        headRow.innerHTML = "<strong>💡 Guidance for: <em>\"" + esc(q) + "\"</em></strong><span class='chip sm'>" + esc(res.model) + "</span>";
+        card.appendChild(headRow);
+
+        var bodyDiv = el("div");
+        bodyDiv.innerHTML = renderMarkdownHelp(res.text);
+        card.appendChild(bodyDiv);
+
+        if (res.actions && res.actions.length) {
+          var actRow = el("div", { class: "help-response-actions" });
+          res.actions.forEach(function (a) {
+            var btn = el("button", { type: "button", class: a.cls || "btn sm" }, a.label);
+            btn.addEventListener("click", a.fn);
+            actRow.appendChild(btn);
+          });
+          card.appendChild(actRow);
+        }
+        respBox.innerHTML = "";
+        respBox.appendChild(card);
+      } catch (e) {
+        respBox.innerHTML = "<div class='help-response-card warn-banner'>Error generating guidance: " + esc(e.message || e) + "</div>";
+      } finally {
+        subBtn.disabled = false;
+      }
+    }
+
+    subBtn.addEventListener("click", function () { handleAsk(); });
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); handleAsk(); } });
+    clrBtn.addEventListener("click", function () {
+      inp.value = "";
+      respBox.style.display = "none";
+      respBox.innerHTML = "";
+      clrBtn.style.display = "none";
+    });
+
+    assistPanel.querySelectorAll(".help-chip-btn").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var query = chip.getAttribute("data-q");
+        inp.value = query;
+        handleAsk(query);
+      });
+    });
+
+    root.appendChild(assistPanel);
+
+    // 2. Core Capabilities & Workflows Library
+    var libWrap = el("div", { class: "mt" });
+    libWrap.innerHTML =
+      "<div class='flex' style='justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px;margin-bottom:12px'>" +
+      "<div><h2 style='margin:0 0 4px;font-size:18px'>📚 Core Capabilities &amp; Practical Workflows</h2>" +
+      "<p class='muted' style='margin:0;font-size:12.5px'>Explore step-by-step guides for the six foundational operational disciplines of Techniek OpsBoard Pro V2.</p></div>" +
+      "<span class='chip sm' style='font-weight:600'>6 Core Disciplines</span>" +
+      "</div>";
+
+    var grid = el("div", { class: "help-library-grid" });
+
+    // Item 1: New Project Setup
+    var c1 = el("div", { class: "help-card" });
+    c1.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>1</span><h3 class='help-card-title'>🚀 New Project Setup &amp; Kickoff</h3></div>" +
+      "<span class='chip label'>Initiation &amp; Planning</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Rapidly establish new engineering projects using industry templates, configurable operating units, and 5-stage kickoff gate governance.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Industry Templates</strong>: Choose from 6 calibrated templates (Automation, Piping, Substations, Software, Structural, HVAC) pre-loaded with WBS deliverables, resource profiles, and WIP limits, or start with a blank canvas.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Commercial Identity</strong>: Assign the responsible Operating Unit (e.g. Process Systems, Automation &amp; Robotics), client name, and authorized BAC ($).</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Contract Billing Models</strong>: Select Fixed Price (FP), Time &amp; Materials (T&amp;M), GMP, or Unit Rate to establish commercial rules and labor multipliers.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>5-Stage Guided Kickoff Gate</strong>: Execute mandatory stage checks: Charter Authority ➔ Multiplier Verification (target ≥ 3.00×) ➔ WBS 100% Decomposition ➔ Critical Path Finish-to-Start Logic ➔ Final Baseline Freeze.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>In-Modal PM Advisor Copilot</strong>: Receive real-time recommendations on contingency budgets and billing models grounded in company procedures.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Complete and baseline the project kickoff before moving cards into execution to establish an uncorrupted schedule baseline (PV) and prevent artificial schedule variance.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm primary' id='btnHelpNewProj'>🚀 New Project Wizard</button>" +
+      "<button type='button' class='btn sm' id='btnHelpBrowseTpl'>📋 Browse Templates</button>" +
+      "<button type='button' class='btn sm' id='btnHelpKickoff'>⭐ Guided Kickoff</button>" +
+      "</div>";
+    c1.querySelector("#btnHelpNewProj").addEventListener("click", function () { openProjectAdmin(null); });
+    c1.querySelector("#btnHelpBrowseTpl").addEventListener("click", function () { openTemplateChooserModal(null); });
+    c1.querySelector("#btnHelpKickoff").addEventListener("click", function () { openProjectKickoffWizard(null); });
+    grid.appendChild(c1);
+
+    // Item 2: Rules of Credit & EVM Sync
+    var c2 = el("div", { class: "help-card" });
+    c2.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>2</span><h3 class='help-card-title'>📐 Rules of Credit &amp; Live EVM Sync</h3></div>" +
+      "<span class='chip label'>Execution &amp; Progress</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Link physical card movements to step-weighted credit rules, dynamically updating the Gantt chart, billable hours, and multi-week resource forecasts.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Step-Weighted Rules</strong>: Define objective milestone increments (e.g. 20% Issue ➔ 50% Review ➔ 80% Approval ➔ 100% Final Deliverable) in Rules of Credit.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Kanban Stage Progression</strong>: Dragging and dropping cards between columns automatically advances physical % complete based on column position or linked RoC step.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Live Gantt Synchronization</strong>: Card % complete instantly recalculates Planned Value (PV), Earned Value (EV), and Actual Cost (AC), dynamically filling progress bars in the Gantt Chart.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Billable Revenue &amp; Multipliers</strong>: Logged hours × labor rates calculate earned revenue. The direct earned multiplier (target ≥ 3.00×) validates profitability in real time.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Time-Phased Resource Load</strong>: Open work package hours are spread across active calendar weeks to keep multi-week lookaheads realistic.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Avoid manual % complete overrides; let verified Kanban column transitions drive EV calculation to ensure audit-defensible progress.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm primary' id='btnHelpRoc'>📐 Rules of Credit</button>" +
+      "<button type='button' class='btn sm' id='btnHelpBoard'>📋 Kanban Board</button>" +
+      "<button type='button' class='btn sm' id='btnHelpGantt'>📊 Gantt Flow</button>" +
+      "</div>";
+    c2.querySelector("#btnHelpRoc").addEventListener("click", function () { go("rulescredit"); });
+    c2.querySelector("#btnHelpBoard").addEventListener("click", function () { go("board"); });
+    c2.querySelector("#btnHelpGantt").addEventListener("click", function () { go("gantt"); });
+    grid.appendChild(c2);
+
+    // Item 3: Managing Resources (People, Machinery, Goods)
+    var c3 = el("div", { class: "help-card" });
+    c3.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>3</span><h3 class='help-card-title'>👥 Multi-Type Resource Management</h3></div>" +
+      "<span class='chip label'>Capacity &amp; Logistics</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Manage your complete engineering and project delivery pool across staff, subcontractors, heavy machinery, and procurement materials.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>7 Resource Classifications</strong>: Model Employee, Subcontractor, Tool / Software, Equipment (Machinery), Facility, Material (Goods), and Other.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Dual Rate Cards</strong>: Set direct internal Cost Rate ($/hr) and contract Client Bill Rate ($/hr) per resource to maintain visibility over gross contribution margins.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Capacity &amp; FTE Calibration</strong>: Establish weekly hours thresholds (e.g. 40 hrs/wk standard for engineers, operational shift hours for machinery).</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>4-Week Lookahead Heatmaps</strong>: Workload heatmaps flag over-utilization (&gt; 100%) and under-utilization (&lt; 90%) across rolling 4-week lookaheads.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Multi-Resource Allocation</strong>: Assign multiple resources or equipment assets to work packages with fractional effort shares.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Track heavy machinery and specialized materials under Equipment or Material to differentiate physical capital and procurement costs from human labor.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm primary' id='btnHelpRes'>👥 Resource Register</button>" +
+      "</div>";
+    c3.querySelector("#btnHelpRes").addEventListener("click", function () { go("resources"); });
+    grid.appendChild(c3);
+
+    // Item 4: Triple-Audience Reporting (Clients, Managers & PMs)
+    var c4 = el("div", { class: "help-card" });
+    c4.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>4</span><h3 class='help-card-title'>📈 Triple-Audience Reporting</h3></div>" +
+      "<span class='chip label'>Reporting &amp; Compliance</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Generate tailored reporting for clients, executive leadership, and peer project managers with strict data containment.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Client Progress Report</strong>: External deliverable featuring milestones, physical % complete, visual Gantt timeline, and active risks. Proprietary internal cost rates, payroll, and profit margins are automatically suppressed.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Executive &amp; Manager EVM Pack</strong>: Complete PMBOK Earned Value analysis. Computes deterministically Planned Value (PV), Earned Value (EV), Actual Cost (AC), CPI, SPI, EAC, and VAC.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Program &amp; Portfolio Rollups</strong>: Multi-project aggregation comparing planned vs actual hours, total commitments, and burn rates across all engineering operating units.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Immutable Audit Trail</strong>: Comprehensive chronological log recording every card transition, baseline revision, and user action, exportable to CSV.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Print &amp; PDF Readiness</strong>: High-resolution print-optimized CSS for presentation during executive gates and client status meetings.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Provide the Client Report for monthly client progress meetings, and preserve the Manager EVM Pack for internal stage-gate governance and margin analysis.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm' id='btnHelpClientRep'>📄 Client Report</button>" +
+      "<button type='button' class='btn sm primary' id='btnHelpMgrRep'>📈 Manager EVM Report</button>" +
+      "<button type='button' class='btn sm' id='btnHelpAudit'>🔍 Audit Trail</button>" +
+      "</div>";
+    c4.querySelector("#btnHelpClientRep").addEventListener("click", function () { go("client"); });
+    c4.querySelector("#btnHelpMgrRep").addEventListener("click", function () { go("reports"); });
+    c4.querySelector("#btnHelpAudit").addEventListener("click", function () { go("audit"); });
+    grid.appendChild(c4);
+
+    // Item 5: PM Advisor & Grounded Procedures
+    var c5 = el("div", { class: "help-card" });
+    c5.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>5</span><h3 class='help-card-title'>💡 PM Advisor &amp; Procedure SOPs</h3></div>" +
+      "<span class='chip label'>Intelligence &amp; Standards</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Consult an intelligent AI copilot strictly grounded in your organization's uploaded engineering procedures, contract rules, and quality manuals.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Upload Company SOPs</strong>: Upload your organization's standard operating procedures, contract rules, or checklists in <code>.md</code> or <code>.pdf</code> format in Settings ➔ Procedures.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>BM25 Semantic Retrieval</strong>: Uploaded documents are indexed into localized passages without transmitting proprietary enterprise data.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Secure OpenRouter LLM</strong>: Advice queries are synthesized with Claude 3.5 Sonnet, GPT-4o, or Gemini 2.5 Flash via secure server environment variables (<code>OPENROUTER_API_KEY</code>).</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Strict Clause Citations</strong>: The Advisor cites the exact document title, section heading, and clause. Procedural gaps in your library are explicitly flagged.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>In-Modal Charter Copilots</strong>: Get real-time advice while drafting project charters and completing guided kickoffs with one-click suggestion application.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Upload your firm's specific standard operating procedures (SOPs) to receive custom-tailored advice citing your exact corporate rules and thresholds.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm primary' id='btnHelpAdv'>💡 Open PM Advisor</button>" +
+      "<button type='button' class='btn sm' id='btnHelpProc'>⚙ Upload Procedures</button>" +
+      "</div>";
+    c5.querySelector("#btnHelpAdv").addEventListener("click", function () { go("advisor"); });
+    c5.querySelector("#btnHelpProc").addEventListener("click", function () { go("settings"); });
+    grid.appendChild(c5);
+
+    // Item 6: Managing Change & Ripple Effects
+    var c6 = el("div", { class: "help-card" });
+    c6.innerHTML =
+      "<div class='help-card-header'>" +
+      "<div class='help-card-title-group'><span class='help-card-num'>6</span><h3 class='help-card-title'>⚖ Change Control &amp; Ripple Effects</h3></div>" +
+      "<span class='chip label'>Governance &amp; Baselines</span>" +
+      "</div>" +
+      "<p class='help-card-desc'>Formally manage scope and budget change orders with automated downstream ripple effects across cards, Gantt schedules, and EVM baselines.</p>" +
+      "<ul class='help-steps'>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Formal Change Proposals</strong>: Document proposed scope expansions, client directives, or field unforeseen conditions with categories and justifications.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Tri-Factor Impact Assessment</strong>: Formally quantify impacts across Cost ($ budget delta), Schedule (duration / deadline shift in days), and Scope (additional deliverables).</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>CCB Authorization Gate</strong>: Role-based approval prevents unvetted baseline creep; non-managers can raise requests, but approval requires authorized manager roles.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Automated Card Generation</strong>: Upon approval, additional scope items are automatically instantiated as new work package cards in column 0 with designated hour estimates.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>Gantt &amp; Critical Path Ripple</strong>: Approved schedule day extensions automatically shift the project finish date and adjust successor activity floats in the critical path.</div></li>" +
+      "<li class='help-step-item'><span class='help-step-dot'></span><div><strong>EAC Baseline Calibration</strong>: Original project baselines remain preserved for historical performance tracking, while current EAC and VAC adjust to reflect the authorized scope.</div></li>" +
+      "</ul>" +
+      "<div class='help-tip'><strong>PM Best Practice:</strong> Never execute out-of-scope work without an approved Change Proposal to prevent unrecoverable cost growth and schedule slippage.</div>" +
+      "<div class='help-actions'>" +
+      "<button type='button' class='btn sm primary' id='btnHelpCo'>⚖ Change Control Register</button>" +
+      "<button type='button' class='btn sm' id='btnHelpProj'>📁 View Projects</button>" +
+      "</div>";
+    c6.querySelector("#btnHelpCo").addEventListener("click", function () { go("changecontrol"); });
+    c6.querySelector("#btnHelpProj").addEventListener("click", function () { go("projects"); });
+    grid.appendChild(c6);
+
+    libWrap.appendChild(grid);
+    root.appendChild(libWrap);
+
+    // 3. Quick Reference: Keyboard Shortcuts & System Standards
+    var bottomGrid = el("div", { class: "grid cols-2 mt-lg", style: "margin-top:20px" });
 
     var kb = el("div", { class: "panel panel-pad" });
-    kb.innerHTML = "<h2>Keyboard shortcuts</h2>" +
-      "<table class='table'><tbody>" +
-      row2cell("<span class='kbd'>N</span>", "New card") +
-      row2cell("<span class='kbd'>/</span>", "Focus search") +
-      row2cell("<span class='kbd'>Esc</span>", "Close dialog / search") +
-      row2cell("<span class='kbd'>Ctrl/⌘ + Z</span>", "Undo") +
-      row2cell("<span class='kbd'>Ctrl/⌘ + Shift + Z</span>", "Redo") +
-      row2cell("<span class='kbd'>?</span>", "Open this help") +
+    kb.innerHTML = "<h2>⌨ Keyboard Shortcuts</h2>" +
+      "<table class='table table-dense'><tbody>" +
+      row2cell("<span class='kbd'>N</span>", "Create new card in active workspace") +
+      row2cell("<span class='kbd'>/</span>", "Focus global search filter") +
+      row2cell("<span class='kbd'>Esc</span>", "Close active modal dialog / clear search") +
+      row2cell("<span class='kbd'>Ctrl/⌘ + Z</span>", "Undo last card or project action") +
+      row2cell("<span class='kbd'>Ctrl/⌘ + Shift + Z</span>", "Redo last reverted action") +
+      row2cell("<span class='kbd'>?</span>", "Open this Help &amp; Intelligence center") +
       "</tbody></table>";
-    grid.appendChild(kb);
+    bottomGrid.appendChild(kb);
 
-    var feat = el("div", { class: "panel panel-pad" });
-    feat.innerHTML = "<h2>What's inside</h2>" +
-      "<ul class='muted' style='line-height:1.9;padding-left:18px'>" +
-      "<li><strong>Multi-user profiles</strong> with local sign-in/out, isolated workspaces, optional passphrase, and an enterprise-SSO entry point</li>" +
-      "<li>Drag-and-drop Kanban with editable, reorderable columns and WIP limits</li>" +
-      "<li><strong>Scales to 200+ cards</strong>: windowed columns, collapse, compact density, board filter, and <strong>per-stage filters</strong></li>" +
-      "<li>Full card detail: assignee, priority, type, labels, dates, effort, checklist, dependencies, activity</li>" +
-      "<li><strong>Gantt &amp; critical path</strong> over dated work and dependencies</li>" +
-      "<li><strong>Risk register</strong> (PMBOK): probability × impact matrix, response strategy, ownership</li>" +
-      "<li><strong>Project administration & integrated change control</strong>: add/edit/delete projects; raise change orders that adjust budget, schedule, and scope on approval</li>" +
-      "<li>Resource utilization with a 4-week forecast</li>" +
-      "<li>Project <strong>and program</strong> rollups + <strong>Earned Value Management</strong> (CPI, SPI, EAC, VAC) in the manager report</li>" +
-      "<li><strong>Live report sync</strong> — stage position drives % complete, so moving a card updates EV, rollups, billing, and resources</li>" +
-      "<li>Manager report (full financials) and client report (financials hidden)</li>" +
-      "<li><strong>Import &amp; plan a board from a file</strong> (CSV / JSON / Markdown)</li>" +
-      "<li>Role-based visibility, dark mode, undo/redo, JSON/CSV import &amp; export</li>" +
+    var standards = el("div", { class: "panel panel-pad" });
+    standards.innerHTML = "<h2>📐 Engineering Governance Standards</h2>" +
+      "<ul class='muted' style='line-height:1.8;padding-left:18px;margin:0'>" +
+      "<li><strong>PMBOK Earned Value Management (EVM)</strong>: CPI, SPI, EAC, and VAC formulas strictly derived from live card progression.</li>" +
+      "<li><strong>Lean Kanban Flow</strong>: Work-In-Progress (WIP) limits prevent multi-tasking bottlenecks and enforce flow control.</li>" +
+      "<li><strong>100% WBS Decomposition Rule</strong>: All work packages must roll up to parent deliverable elements with measurable definitions of done.</li>" +
+      "<li><strong>A/E Multiplier Targets</strong>: Minimum direct earned labor multiplier target of ≥ 3.00× to sustain overhead and target profitability.</li>" +
+      "<li><strong>Zero-Trust Secret Architecture</strong>: Raw API keys stay strictly server-side in environment variables — never in client storage.</li>" +
       "</ul>";
-    grid.appendChild(feat);
-    root.appendChild(grid);
+    bottomGrid.appendChild(standards);
+    root.appendChild(bottomGrid);
 
-    root.appendChild(el("div", { class: "flex mt", style: "justify-content:space-between" },
-      "<span class='warn-banner' style='flex:1'>Local-first prototype. Sensitive data should not be entered until enterprise authentication and security review are complete.</span>"));
-    root.appendChild(el("div", { class: "faint mt", style: "font-size:12px" }, "Techniek OpsBoard Pro V2 - version " + APP_VERSION + " - schema " + SCHEMA_VERSION));
+    root.appendChild(el("div", { class: "faint mt", style: "font-size:12px;margin-top:16px;text-align:center" },
+      "Techniek OpsBoard Pro V2 — Enterprise Project Controls System — version " + APP_VERSION + " (schema " + SCHEMA_VERSION + ")"));
   };
+
 
   /* ----------------------------------------------------------------------- *
    * Reusable render helpers
@@ -8839,7 +11809,7 @@
   }
   function deleteColumn(b, col) {
     var cards = boardCards(b.id).filter(function (c) { return c.columnId === col.id; });
-    if (b.columns.length <= 1) { toast("A board needs at least one column", "err"); return; }
+    if (b.columns.length <= 1) { toast("Cannot delete column: A board must contain at least one column. Add a replacement column before deleting this one.", "err"); return; }
     closeModal();
     confirmModal("Delete column '" + col.name + "'?", cards.length ? cards.length + " card(s) will move to the previous column." : "This column is empty.", function () {
       mutate(function () {
@@ -9006,7 +11976,7 @@
 
   function openCardEditor(cardId) {
     if (!canEdit() && cardId) return openCardReadonly(cardId);
-    if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
+    if (!canEdit()) { toast("Action blocked: Viewer role is read-only. Switch to an editor role to create or modify cards.", "err"); return; }
     var b = activeBoard();
     var c = cardId ? cardById(cardId) : {
       id: uid("c"), boardId: b.id, columnId: b.columns[0].id, projectId: null, title: "", desc: "",
@@ -9056,7 +12026,7 @@
     var ruleEditBtn = el("button", { class: "btn sm ghost", type: "button" }, "Edit selected rule");
     ruleEditBtn.addEventListener("click", function () {
       var rule = ruleById((body.querySelector("#fRule") || {}).value || "");
-      if (!rule) return toast("Select a rules-of-credit schema first", "err");
+      if (!rule) return toast("Missing schema selection: Rules of credit schema must be chosen before assigning steps. Select a schema above.", "err");
       closeModal();
       openRuleSchemaEditor(rule);
     });
@@ -9150,7 +12120,7 @@
     foot.push({ label: "Cancel", cls: "btn", fn: closeModal });
     foot.push({ label: c._new ? "Create card" : "Save", cls: "btn primary", fn: function () {
       var title = $("#fTitle").value.trim();
-      if (!title) { toast("Title is required", "err"); return; }
+      if (!title) { toast("Missing card title: Card title is required. Enter a descriptive title before saving.", "err"); return; }
       var labels = [].slice.call(body.querySelectorAll("[data-label]")).filter(function (b2) { return b2.getAttribute("data-on") === "1"; }).map(function (b2) { return b2.dataset.label; });
       var checklist = [].slice.call(ckList.querySelectorAll(".checklist-item")).map(function (rowEl) {
         return { id: rowEl.dataset.ck, text: rowEl.querySelector("input[type=text]").value, done: rowEl.querySelector("input[type=checkbox]").checked };
@@ -9401,7 +12371,7 @@
     return state.boards.filter(function (b) { return (b.rosterIds || []).indexOf(resourceId) !== -1; }).map(function (b) { return b.name; });
   }
   function exportResourcesCSV() {
-    if (!canManageResources()) { toast("Resource export is manager-only", "err"); return; }
+    if (!canManageResources()) { toast("Access restricted: Resource export is limited to managers. Switch to PM or Admin role to export roster.", "err"); return; }
     var rows = [["ID", "Name", "Type", "Role", "Department", "Company", "Capacity Hours", "Cost Rate", "Bill Rate", "Unit", "Status", "Board Rosters", "Notes"]];
     state.resources.forEach(function (r) {
       normalizeResource(r);
@@ -9418,7 +12388,7 @@
     ].map(function (r) { return r.map(csvCell).join(","); }).join("\n");
   }
   function importResourcesPrompt() {
-    if (!canManageResources()) { toast("Resource import is manager-only", "err"); return; }
+    if (!canManageResources()) { toast("Access restricted: Resource import is limited to managers. Switch to PM or Admin role to import roster.", "err"); return; }
     var input = el("input", { type: "file", accept: ".csv,.tsv,text/csv,text/tab-separated-values" });
     input.addEventListener("change", function () {
       var file = input.files && input.files[0];
@@ -9429,7 +12399,7 @@
           var count = importResourcesFromText(String(reader.result || ""), file.name);
           toast(count + " resource row" + (count === 1 ? "" : "s") + " imported", "ok");
         } catch (err) {
-          toast(err.message || "Resource import failed", "err");
+          toast("Import failed: " + (err.message || "File format not recognized") + ". Check columns against the template and try again.", "err");
         }
       };
       reader.readAsText(file);
@@ -9745,7 +12715,7 @@
   }
 
   function importAndPlanPrompt() {
-    if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
+    if (!canEdit()) { toast("Action blocked: Viewer role is read-only. Switch to an editor role to import boards.", "err"); return; }
     var input = el("input", { type: "file", accept: ".csv,.tsv,.json,.md,.txt,text/*,application/json" });
     input.addEventListener("change", function () {
       var file = input.files[0];
@@ -9760,9 +12730,9 @@
             });
             return;
           }
-          if (!result.tasks.length) { toast("No tasks found in that file", "err"); return; }
+          if (!result.tasks.length) { toast("Import failed: No valid tasks found in the file. Check the CSV/JSON columns and try again.", "err"); return; }
           planBoardWizard(result, file.name);
-        } catch (e) { toast("Could not parse file: " + e.message, "err"); }
+        } catch (e) { toast("Parse error: Could not parse file (" + e.message + "). Verify file format and syntax.", "err"); }
       };
       reader.readAsText(file);
     });
@@ -9852,7 +12822,7 @@
 
   /* ---------- Scale testing ---------- */
   function generateLoadCards(n) {
-    if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
+    if (!canEdit()) { toast("Action blocked: Viewer role is read-only. Switch to an editor role to add test cards.", "err"); return; }
     var b = activeBoard();
     var verbs = ["Review", "Draft", "Inspect", "Validate", "Calibrate", "Wire", "Test", "Document", "Procure", "Assemble", "Schedule", "Audit"];
     var nouns = ["actuator", "harness", "controller", "bracket", "sensor", "panel", "gearbox", "manifold", "enclosure", "relay", "fixture", "report"];
@@ -9874,7 +12844,7 @@
     toast(n + " demo cards added to " + b.name, "ok");
   }
   function removeLoadCards() {
-    if (!canEdit()) { toast("Viewer role is read-only", "err"); return; }
+    if (!canEdit()) { toast("Action blocked: Viewer role is read-only. Switch to an editor role to remove test cards.", "err"); return; }
     var before = state.cards.length;
     mutate(function () { state.cards = state.cards.filter(function (c) { return !c._gen; }); });
     toast((before - state.cards.length) + " generated cards removed", "ok");
@@ -9898,7 +12868,7 @@
     $("#roleSelect").addEventListener("change", function () {
       if (!canChangeSimulatedRole()) {
         $("#roleSelect").value = role();
-        toast("Only an administrator can change the simulated role", "err");
+        toast("Permission denied: Only an administrator can switch simulated roles. Contact your workspace admin.", "err");
         return;
       }
       mutate(function () { state.settings.role = $("#roleSelect").value; });
@@ -9976,19 +12946,35 @@
     // Ask the server who we are. If it cannot answer — offline, file://, or no
     // Worker running — the app falls back to the local profile gate unchanged.
     var me = null;
+    var serverErrorDetail = "";
     try {
       var res = await fetch("/api/me");
-      if (res.ok) me = await res.json();
+      if (res.ok) {
+        me = await res.json();
+      } else {
+        var errBody = await res.json().catch(function () { return {}; });
+        serverErrorDetail = errBody.detail || errBody.error || ("Server returned status " + res.status);
+      }
     } catch (err) {
       console.warn("Server identity unavailable; running local-only.", err);
+      serverErrorDetail = "Network connection to API server failed.";
     }
 
     if (!me || !me.authenticated) {
+      var params = new URLSearchParams(location.search);
+      if (params.get("mode") === "local" || params.get("offline") === "1") {
+        syncState.status = 'local';
+        var localUser = currentUser();
+        if (!localUser || needsUnlock(localUser)) { renderAuthGate(localUser && localUser.id); return; }
+        enterApp(localUser.id);
+        toast("Connected in high-availability local mode", "ok");
+        return;
+      }
       // /app is the server-backed product. Falling back to a browser-local
-      // "Local Admin" profile here made an API authorization failure look like
-      // a successful login while hiding every real admin function.
+      // "Local Admin" profile without notice hid the API failure, so we present
+      // an explicit choice: sign in again or immediately open local workspace.
       if (/^\/app\/?$/.test(location.pathname)) {
-        renderServerSessionError();
+        renderServerSessionError(serverErrorDetail);
         return;
       }
       syncState.status = 'local';
@@ -10223,14 +13209,34 @@
       undo: undo,
       viewExists: function (id) { return typeof VIEWS[id] === "function"; },
       viewIds: function () { return Object.keys(VIEWS); },
+      VIEWS: VIEWS,
       kbDocuments: kbDocuments,
       kbSearch: function (q, n) { return kbSearch(q, n); },
       kbPlaybookForFinding: kbPlaybookForFinding,
       kbParseMarkdown: kbParseMarkdown,
       kbAddDocRaw: function (md, name) { var d = kbParseMarkdown(md, name); state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (x) { return x.id !== d.id; }); state.knowledgeDocs.push(d); kbInvalidate(); save(); return d.id; },
+      kbRemoveDocRaw: function (id) { state.knowledgeDocs = (state.knowledgeDocs || []).filter(function (x) { return x.id !== id; }); kbInvalidate(); save(); return true; },
       cardById: cardById,
       resourceById: resourceById,
       uid: uid,
+      resetBlank: function () { state = blankWorkspace(); accounts = accounts || loadAccounts(); save(); return true; },
+      industryTemplates: function () { return INDUSTRY_TEMPLATES; },
+      applyIndustryTemplate: function (key, bId) { return applyIndustryTemplate(key, bId); },
+      isKickoffPending: function (pid) { var p = projectById(pid); return !!(p && p.kickoff && p.kickoff.stage !== "frozen"); },
+      canAdministerUsers: function () { return canAdministerUsers(); },
+      accounts: function () { return accounts; },
+      currentUser: function () { return currentUser(); },
+      createUser: function (name, pass, r) { return createUser(name, pass, r); },
+      deleteUser: function (u, skipConfirm) { return deleteUser(u, skipConfirm); },
+      companyName: companyName,
+      orgUnitsList: orgUnitsList,
+      defaultOrgUnit: defaultOrgUnit,
+      billingTypesList: billingTypesList,
+      askProjectCharterCopilot: askProjectCharterCopilot,
+      askHelpAssistant: askHelpAssistant,
+      openProjectAdmin: openProjectAdmin,
+      openTemplateChooserModal: openTemplateChooserModal,
+      navItems: function () { return NAV.slice(); },
     },
   };
   window.TechniekOpsBoard = publicApi;

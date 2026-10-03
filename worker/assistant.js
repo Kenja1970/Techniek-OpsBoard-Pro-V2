@@ -180,10 +180,10 @@ function renderEvidence(pack) {
 }
 
 export async function advise(env, pack) {
-  const apiKey = env.LLM_API_KEY;
+  const apiKey = env.LLM_API_KEY || env.OPENROUTER_API_KEY;
   const model = env.LLM_MODEL;
   if (!apiKey || !model) {
-    return { ok: false, configured: false, error: "No language model is configured. Set LLM_API_KEY and LLM_MODEL." };
+    return { ok: false, configured: false, error: "No language model is configured. Set LLM_API_KEY or OPENROUTER_API_KEY and LLM_MODEL." };
   }
   const baseUrl = (env.LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 

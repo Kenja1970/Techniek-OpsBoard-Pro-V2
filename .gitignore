@@ -19,9 +19,15 @@ backups/
 serve.ps1
 .claude/
 
-# Local agent proxy secrets
-server/.env.local
+# Local agent proxy secrets & LLM environment variables
+.env
+.env.*
 .env.local
+*.env
+*.env.*
+server/.env
+server/.env.*
+server/.env.local
 
 # Cloudflare Workers
 .wrangler/

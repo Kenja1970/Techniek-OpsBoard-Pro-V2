@@ -41,7 +41,7 @@
     cur.rows.push({ name: name, pass: !!cond, detail: detail || "" });
   }
 
-  function run() {
+  async function run() {
     var TB = window.TechniekOpsBoard || window.TechniekOpsBoard;
     if (!TB || !TB._qa) { setTimeout(run, 50); return; }
     var Q = TB._qa;
@@ -869,6 +869,14 @@
       check("health grades every dimension A-F", ["Cost", "Schedule", "Margin", "Flow", "Risk", "Resource", "Governance"].every(function (d) { return H.dimensions[d] && /^[A-F]$/.test(H.dimensions[d].grade); }));
       check("overall health score bounded 0-100 with grade", /^[A-F]$/.test(H.overall.grade) && H.overall.score >= 0 && H.overall.score <= 100);
       check("advisor view is reachable from nav", Q.navIds().indexOf("advisor") !== -1);
+      var mockAdvisorRoot = document.createElement("div");
+      if (Q.VIEWS && Q.VIEWS.advisor) {
+        Q.VIEWS.advisor(mockAdvisorRoot);
+        var subnavText = mockAdvisorRoot.textContent || "";
+        check("advisor view contains Assistant tab", /PM Assistant/i.test(subnavText));
+        check("advisor view contains Procedures tab", /Company & Industry Procedures/i.test(subnavText));
+        check("advisor view contains Findings tab", /Portfolio Inspection & Findings/i.test(subnavText));
+      }
       // Reactivity: fixing a problem must improve the health score.
       var wipBefore = F.filter(function (f) { return /WIP/.test(f.title); }).length;
       var s = Q.state();
@@ -1072,8 +1080,13 @@
       var hit = Q.kbSearch("zorbulator calibration witnessed", 3);
       check("uploaded procedure is retrievable by content", hit.length > 0 && hit[0].passage.docId === "qa-test-procedure", hit.length ? hit[0].passage.docId : "none");
       check("uploaded procedure keeps its frontmatter metadata", (function () { var d = Q.kbDocuments().filter(function (x) { return x.id === "qa-test-procedure"; })[0]; return d && d.dimension === "Governance" && d.title === "QA Test Procedure"; })());
+      check("uploaded procedure flagged as userAdded", (function () { var d = Q.kbDocuments().filter(function (x) { return x.id === "qa-test-procedure"; })[0]; return !!(d && d.userAdded); })());
       check("markdown without frontmatter still parses", (function () { var d = Q.kbParseMarkdown("## A heading\n\nSome body text here.", "plain-note.md"); return d.title === "plain-note" && d.sections.length >= 1; })());
       check("knowledge base needs no API key or network", !Q.state().settings.apiKey && typeof window.TECHNIEK_KNOWLEDGE === "object");
+      if (Q.kbRemoveDocRaw) {
+        Q.kbRemoveDocRaw("qa-test-procedure");
+        check("removing uploaded procedure restores corpus baseline", Q.kbDocuments().length === before);
+      }
     })();
 
     /* ---- 18. Navigation completeness (no orphaned views) ---- */
@@ -1194,6 +1207,358 @@
       // --- malformed top-level response degrades safely ---
       check("non-JSON / empty response yields an empty plan", Q.agentPlanFromLlmResponse(null).plan.length === 0);
       check("response with no actions array yields an empty plan", Q.agentPlanFromLlmResponse({ narrative: "hi" }).plan.length === 0);
+    })();
+
+    /* ---- 16. Opening Board Zero-State & PMBOK Project Kickoff Lifecycle ---- */
+    group("16 · Opening Board Zero-State & PMBOK Project Kickoff Lifecycle");
+    (function () {
+      // 1. Zero-State Workspace
+      Q.resetBlank();
+      var blankS = Q.state();
+      check("blank workspace has zero projects", blankS.projects.length === 0);
+      check("blank workspace has zero cards", blankS.cards.length === 0);
+      check("blank workspace has zero risks", (blankS.risks || []).length === 0);
+      check("blank workspace has zero change orders", (blankS.changeOrders || []).length === 0);
+      check("blankStart flag is set", blankS.blankStart === true);
+
+      // 2. Industry PMO Templates Catalog
+      var tmpls = Q.industryTemplates();
+      var tKeys = Object.keys(tmpls || {});
+      check("industry templates catalog populated (>= 4)", tKeys.length >= 4, "found " + tKeys.length);
+      ["industrial-automation", "mechanical-retrofit", "digital-iiot", "offshore-survey"].forEach(function (k) {
+        var t = tmpls[k];
+        check("template exists: " + k, !!t);
+        if (t) {
+          check(k + " has valid metadata & budget", !!(t.name && t.code && t.client && t.budget > 0 && t.billingType && t.targetCm > 0));
+          check(k + " has staff resource pool", Array.isArray(t.resources) && t.resources.length >= 2);
+          check(k + " has structured WBS elements", Array.isArray(t.wbsElements) && t.wbsElements.length >= 4);
+          check(k + " has deliverable cards", Array.isArray(t.cards) && t.cards.length >= 4);
+          check(k + " has seeded initial risks", Array.isArray(t.risks) && t.risks.length >= 1);
+          check(k + " defines flow WIP limit", typeof t.wipLimit === "number" && t.wipLimit >= 1);
+          // Standard WBS code format invariant (no legacy numeric e.g. 1.1)
+          var allWbsCodes = t.wbsElements.map(function (w) { return w.wbsCode; });
+          var nonLegacy = allWbsCodes.every(function (c) { return !/^\d+\.\d+$/.test(c); });
+          check(k + " uses standard non-legacy WBS codes", nonLegacy);
+          var cardsWbsMatch = t.cards.every(function (c) { return allWbsCodes.indexOf(c.wbsCode) !== -1; });
+          check(k + " all card WBS codes match WBS elements", cardsWbsMatch);
+        }
+      });
+
+      // 3. Template Instantiation
+      var pid = Q.applyIndustryTemplate("industrial-automation");
+      check("template application returns project id", typeof pid === "string" && pid.length > 0);
+      var p = Q.projectById(pid);
+      check("project created with template attributes", !!(p && p.budget === 68000 && p.client === "Midwest Grid & Power"));
+      check("project kickoff status is frozen", !!(p && p.kickoff && p.kickoff.stage === "frozen"));
+      check("isKickoffPending returns false when frozen", Q.isKickoffPending(pid) === false);
+      check("baseline budget established", !!(p && p.baseline && p.baseline.budget === 68000));
+      check("blankStart flag reset to false", Q.state().blankStart === false);
+
+      // Verify WBS Elements
+      var pWbs = Q.projectWbsElements(pid);
+      check("WBS elements created for project (8)", pWbs.length === 8, "got " + pWbs.length);
+      check("summary WBS element present (AUT-100)", pWbs.some(function (w) { return w.wbsCode === "AUT-100" && w.isSummary; }));
+      check("deliverable WBS element present (AUT-110)", pWbs.some(function (w) { return w.wbsCode === "AUT-110" && !w.isSummary; }));
+
+      // Verify Cards & Dependencies
+      var pCards = Q.cardsForProject(pid);
+      check("work package cards created (5)", pCards.length === 5, "got " + pCards.length);
+      check("deliverable card carries valid WBS code", pCards.some(function (c) { return c.wbsCode === "AUT-110"; }));
+      check("assignees mapped from template resource pool", pCards.every(function (c) { return !!c.assigneeId; }));
+      check("predecessor dependencies established", pCards.some(function (c) { return c.deps && c.deps.length > 0; }));
+
+      // Verify Risks Seeded
+      var pRisks = (Q.state().risks || []).filter(function (r) { return r.projectId === pid; });
+      check("initial risks seeded for project (2)", pRisks.length === 2, "got " + pRisks.length);
+      check("threat risk modeled with cost impact", pRisks.some(function (r) { return r.riskType === "Threat" && r.costImpact > 0; }));
+      check("opportunity risk modeled with strategy", pRisks.some(function (r) { return r.riskType === "Opportunity" && r.response === "Exploit"; }));
+
+      // Verify WIP Limit Calibration
+      var b = Q.state().boards.filter(function (x) { return x.id === p.boardId; })[0];
+      var inProg = b && b.columns.filter(function (col) { return /in progress|doing|executing/i.test(col.name); })[0];
+      check("board column WIP limit calibrated from template", !!(inProg && inProg.wip === 3), "got " + (inProg ? inProg.wip : "none"));
+
+      // 4. Metric Derivation Invariant (Strict EVM & Multiplier Derivation)
+      check("no hardcoded CPI on project", p.cpi === undefined);
+      check("no hardcoded SPI on project", p.spi === undefined);
+      check("no hardcoded EAC on project", p.eac === undefined);
+      check("no hardcoded multiplier on project", p.multiplier === undefined);
+      var evm = Q.projectEVM(pid);
+      check("EVM BAC strictly derived", typeof evm.bac === "number" && evm.bac > 0, "got " + evm.bac);
+      check("EVM PV is valid numeric", typeof evm.pv === "number" && !isNaN(evm.pv));
+      check("EVM EV is valid numeric", typeof evm.ev === "number" && !isNaN(evm.ev));
+      check("EVM AC is valid numeric", typeof evm.ac === "number" && !isNaN(evm.ac));
+
+      // 5. Atomic Undo / Transaction Rollback
+      Q.undo();
+      check("undo transaction reverts project creation", Q.projectById(pid) == null);
+      check("undo transaction reverts cards creation", Q.cardsForProject(pid).length === 0);
+      check("undo transaction reverts wbs elements", Q.projectWbsElements(pid).length === 0);
+      check("undo restores blank workspace", Q.state().projects.length === 0);
+
+      // 6. Reset back to clean demo workspace for subsequent assertions
+      Q.resetDemo();
+      check("demo workspace restored cleanly", Q.state().projects.length > 0 && Q.state().cards.length > 0);
+    })();
+
+    /* ---- 21. User Administration & Multi-Profile Governance ---- */
+    (function () {
+      group("21 · User Administration & Multi-Profile Governance");
+      check("canAdministerUsers function exposed and returns boolean", typeof Q.canAdministerUsers() === "boolean");
+      check("admin role can administer users", Q.canAdministerUsers() === true);
+      
+      var accts = Q.accounts();
+      check("accounts roster is loaded", !!(accts && Array.isArray(accts.users) && accts.users.length > 0));
+      
+      var cu = Q.currentUser();
+      check("current active user profile resolved", !!(cu && cu.id === accts.currentUserId));
+
+      // Create new user profile in local mode
+      var initialCount = accts.users.length;
+      Q.createUser("QA Engineering PM", "", "Project Manager");
+      var newAccts = Q.accounts();
+      var addedUser = newAccts.users.filter(function (u) { return u.displayName === "QA Engineering PM"; })[0];
+      check("createUser appends profile to accounts roster", !!addedUser, "total users: " + newAccts.users.length);
+      check("created user assigned specified Project Manager role", addedUser && addedUser.role === "Project Manager");
+      check("created user receives unique ID", addedUser && typeof addedUser.id === "string" && addedUser.id.length > 0);
+
+      // VIEWS.admin rendering in local admin mode
+      var originalRole = Q.state().settings.role;
+      Q.state().settings.role = "Admin";
+      var adminRoot = document.createElement("div");
+      Q.VIEWS.admin(adminRoot);
+      check("VIEWS.admin renders without error", adminRoot.children.length > 0);
+      check("VIEWS.admin contains user management header", adminRoot.innerHTML.indexOf("Accounts") !== -1);
+      check("VIEWS.admin displays new user in roster table", adminRoot.innerHTML.indexOf("QA Engineering PM") !== -1);
+
+      // Role permission enforcement
+      Q.state().settings.role = "Viewer";
+      check("canAdministerUsers denies non-admin viewer when multi-profile roster exists", Q.canAdministerUsers() === false);
+      var restrictedRoot = document.createElement("div");
+      Q.VIEWS.admin(restrictedRoot);
+      check("VIEWS.admin gate blocks non-admin", restrictedRoot.innerHTML.indexOf("Administrator access is required") !== -1);
+
+      // Restore Admin role
+      Q.state().settings.role = "Admin";
+      check("canAdministerUsers restored for Admin", Q.canAdministerUsers() === true);
+
+      // Current user deletion safeguard
+      var activeUser = Q.currentUser();
+      var countBeforeSelfDelete = Q.accounts().users.length;
+      Q.deleteUser(activeUser, true);
+      check("deleteUser protects currently active profile from accidental deletion", Q.accounts().users.length === countBeforeSelfDelete);
+
+      // Cleanup created test user
+      if (addedUser) {
+        // Switch back to original user if needed
+        if (cu && cu.id) Q.accounts().currentUserId = cu.id;
+        Q.deleteUser(addedUser, true);
+        var remaining = Q.accounts().users.filter(function (u) { return u.displayName === "QA Engineering PM"; });
+        check("deleteUser successfully removes target secondary profile", remaining.length === 0);
+      }
+      Q.state().settings.role = originalRole;
+    })();
+
+    /* ---- 22. Configurable Enterprise Parameters, In-Modal PM Copilot & NN/g Navigation Flow ---- */
+    await (async function () {
+      group("22 · Enterprise Parameter Customization, In-Modal Copilot & NN/g Flow");
+      
+      // 1. Configurable enterprise parameter functions
+      check("companyName function exposed", typeof Q.companyName() === "string");
+      var origCompany = Q.state().settings.companyName;
+      Q.state().settings.companyName = "Apex Industrial Systems";
+      check("companyName reflects custom enterprise name", Q.companyName() === "Apex Industrial Systems");
+      Q.state().settings.companyName = origCompany;
+
+      // 2. Dynamic Operating Units
+      var defaultUnits = Q.orgUnitsList();
+      check("orgUnitsList returns array of standard units", Array.isArray(defaultUnits) && defaultUnits.length >= 4);
+      check("defaultOrgUnit resolves first available unit", typeof Q.defaultOrgUnit() === "string" && Q.defaultOrgUnit().length > 0);
+      
+      var origOrgUnits = Q.state().settings.orgUnits;
+      Q.state().settings.orgUnits = ["Process Systems", "Automation & Robotics", "Power Distribution"];
+      var customUnits = Q.orgUnitsList();
+      check("orgUnitsList reflects configured enterprise units", customUnits.indexOf("Process Systems") !== -1 && customUnits.indexOf("Automation & Robotics") !== -1);
+      Q.state().settings.orgUnits = origOrgUnits;
+
+      // 3. Dynamic Contract Billing Types
+      var defaultBilling = Q.billingTypesList();
+      check("billingTypesList returns array of standard billing models", Array.isArray(defaultBilling) && defaultBilling.length >= 4);
+      var origBilling = Q.state().settings.billingTypes;
+      Q.state().settings.billingTypes = ["Target Price with Incentive", "Guaranteed Maximum Price (GMP)", "Unit Rate Delivery"];
+      var customBilling = Q.billingTypesList();
+      check("billingTypesList reflects customized contract codes", customBilling.indexOf("Guaranteed Maximum Price (GMP)") !== -1);
+      Q.state().settings.billingTypes = origBilling;
+
+      // 4. Role-based NAV Lifecycle Sequencing
+      var navItems = Q.navItems();
+      var navSections = [];
+      navItems.forEach(function (n) {
+        if (n.section && navSections.indexOf(n.section) === -1) navSections.push(n.section);
+      });
+      check("NAV includes Execution & Flow section", navSections.indexOf("Execution & Flow") !== -1);
+      check("NAV includes Scope & Progress section", navSections.indexOf("Scope & Progress") !== -1);
+      check("NAV includes Governance & Registers section", navSections.indexOf("Governance & Registers") !== -1);
+      check("NAV includes Team & Capacity section", navSections.indexOf("Team & Capacity") !== -1);
+      check("NAV includes Intelligence section", navSections.indexOf("Intelligence") !== -1);
+      check("NAV includes Reports & Audit section", navSections.indexOf("Reports & Audit") !== -1);
+      check("NAV includes Administration section", navSections.indexOf("Administration") !== -1);
+
+      // Verify Dashboard, Board, Gantt, Projects are grouped in Execution & Flow
+      var execItems = navItems.filter(function (n) { return n.section === "Execution & Flow"; }).map(function (n) { return n.id; });
+      check("Dashboard is first in Execution & Flow", execItems[0] === "dashboard");
+      check("Kanban Board is in Execution & Flow", execItems.indexOf("board") !== -1);
+      check("Gantt is in Execution & Flow", execItems.indexOf("gantt") !== -1);
+
+      // 5. In-Modal PM Copilot Advice Querying (Procedure RAG + OpenRouter fallback)
+      var copilotAdvice = await Q.askProjectCharterCopilot("Recommend contingency and billing type for this fixed scope", {
+        budget: 50000,
+        billingType: "FP",
+        orgUnit: "Engineering & Design"
+      });
+      check("copilot returns synthesized or AI answer", !!(copilotAdvice && typeof copilotAdvice.text === "string" && copilotAdvice.text.length > 20));
+      check("copilot provides citations or model attribution", !!(copilotAdvice && copilotAdvice.model));
+      check("copilot returns suggestedFields for one-click form application", !!(copilotAdvice && copilotAdvice.suggestedFields));
+
+      // 6. VIEWS.settings renders Organization & Commercial Parameters
+      var settingsRoot = document.createElement("div");
+      Q.VIEWS.settings(settingsRoot);
+      check("VIEWS.settings renders Organization & Commercial panel", settingsRoot.innerHTML.indexOf("Organization &amp; Commercial Parameters") !== -1 || settingsRoot.innerHTML.indexOf("Organization & Commercial Parameters") !== -1);
+      check("VIEWS.settings provides OpenRouter AI configuration entry", settingsRoot.innerHTML.indexOf("OpenRouter AI") !== -1);
+      check("VIEWS.settings confirms Environment Secured and no client key buttons", settingsRoot.innerHTML.indexOf("Environment Secured") !== -1 && settingsRoot.innerHTML.indexOf("btnCfgOpenRouter") === -1);
+      check("Browser localStorage is free of raw OpenRouter keys", !localStorage.getItem("techniek_opsboard_openrouter_key"));
+    })();
+
+    /* ---- 23. Help Center AI Assistant, 6 Core Disciplines Library & Non-Prototype Verification ---- */
+    await (async function () {
+      group("23 · Help AI Assistant, 6-Pillar Capability Library & Non-Prototype Verification");
+      
+      // 1. Help View Existence and Rendering
+      check("VIEWS.help is exposed as a function", typeof Q.VIEWS.help === "function");
+      var helpRoot = document.createElement("div");
+      Q.VIEWS.help(helpRoot);
+      check("VIEWS.help renders without error", helpRoot.children.length > 0);
+      
+      // 2. Non-prototype verification
+      var helpHtml = helpRoot.innerHTML;
+      var hasPrototype = /prototype/i.test(helpHtml);
+      check("Help section HTML contains zero occurrences of 'prototype'", !hasPrototype);
+      var helpText = helpRoot.textContent || helpRoot.innerText || "";
+      check("Help section text contains zero occurrences of 'prototype'", !(/prototype/i.test(helpText)));
+
+      // 3. AI Assistant Panel Elements
+      check("Help view contains AI Assistant panel", helpHtml.indexOf("help-assistant-box") !== -1);
+      check("Help view header identifies AI Assistant", helpHtml.indexOf("System &amp; Application AI Assistant") !== -1 || helpHtml.indexOf("System & Application AI Assistant") !== -1);
+      check("Help view contains quick query prompt chips", helpHtml.indexOf("help-chip-btn") !== -1);
+      check("Help view contains input field and Ask Assistant button", !!helpRoot.querySelector("#helpAssistantInput") && !!helpRoot.querySelector("#helpAssistantSubmit"));
+
+      // 4. Six Core Capabilities Library
+      check("Help view contains 6 Core Disciplines header", helpHtml.indexOf("Core Capabilities &amp; Practical Workflows") !== -1 || helpHtml.indexOf("Core Capabilities & Practical Workflows") !== -1);
+      
+      // Discipline 1: New Project Setup & Kickoff
+      check("Library Item 1 covers New Project Setup & Kickoff", helpHtml.indexOf("New Project Setup &amp; Kickoff") !== -1 || helpHtml.indexOf("New Project Setup & Kickoff") !== -1);
+      check("Item 1 mentions Industry Templates", helpHtml.indexOf("Industry Templates") !== -1);
+      check("Item 1 provides New Project Wizard action button", !!helpRoot.querySelector("#btnHelpNewProj"));
+      check("Item 1 provides Browse Templates action button", !!helpRoot.querySelector("#btnHelpBrowseTpl"));
+      check("Item 1 provides Guided Kickoff action button", !!helpRoot.querySelector("#btnHelpKickoff"));
+
+      // Verify buttons click cleanly without throwing TypeError or passing raw events
+      var newProjClickOk = false;
+      try {
+        helpRoot.querySelector("#btnHelpNewProj").click();
+        newProjClickOk = true;
+      } catch (e) {
+        newProjClickOk = false;
+      }
+      check("Item 1 New Project Wizard button clicks without error", newProjClickOk);
+
+      var browseTplClickOk = false;
+      try {
+        helpRoot.querySelector("#btnHelpBrowseTpl").click();
+        browseTplClickOk = true;
+      } catch (e) {
+        browseTplClickOk = false;
+      }
+      check("Item 1 Browse Templates button clicks without error", browseTplClickOk);
+
+      var mouseEventAdminOk = false;
+      try {
+        Q.openProjectAdmin(new MouseEvent("click"));
+        mouseEventAdminOk = true;
+      } catch (e) {
+        mouseEventAdminOk = false;
+      }
+      check("openProjectAdmin safely handles MouseEvent argument", mouseEventAdminOk);
+
+      var mouseEventTplOk = false;
+      try {
+        Q.openTemplateChooserModal(new MouseEvent("click"));
+        mouseEventTplOk = true;
+      } catch (e) {
+        mouseEventTplOk = false;
+      }
+      check("openTemplateChooserModal safely handles MouseEvent argument", mouseEventTplOk);
+      check("Library Item 2 covers Rules of Credit & Live EVM Sync", helpHtml.indexOf("Rules of Credit &amp; Live EVM Sync") !== -1 || helpHtml.indexOf("Rules of Credit & Live EVM Sync") !== -1);
+      check("Item 2 mentions Live Gantt Synchronization", helpHtml.indexOf("Live Gantt Synchronization") !== -1);
+      check("Item 2 mentions direct earned multiplier", helpHtml.indexOf("multiplier") !== -1);
+      check("Item 2 provides Rules of Credit and Gantt buttons", !!helpRoot.querySelector("#btnHelpRoc") && !!helpRoot.querySelector("#btnHelpGantt"));
+
+      // Discipline 3: Multi-Type Resource Management
+      check("Library Item 3 covers Multi-Type Resource Management", helpHtml.indexOf("Multi-Type Resource Management") !== -1);
+      check("Item 3 covers 7 Resource Classifications (people, machinery, goods)", helpHtml.indexOf("7 Resource Classifications") !== -1);
+      check("Item 3 covers Dual Rate Cards and 4-Week Lookahead Heatmaps", helpHtml.indexOf("Dual Rate Cards") !== -1 && helpHtml.indexOf("4-Week Lookahead") !== -1);
+      check("Item 3 provides Resource Register action button", !!helpRoot.querySelector("#btnHelpRes"));
+
+      // Discipline 4: Triple-Audience Reporting
+      check("Library Item 4 covers Triple-Audience Reporting", helpHtml.indexOf("Triple-Audience Reporting") !== -1);
+      check("Item 4 covers Client Progress Report suppressing internal costs", helpHtml.indexOf("Client Progress Report") !== -1 && helpHtml.indexOf("suppressed") !== -1);
+      check("Item 4 covers Executive & Manager EVM Pack with CPI, SPI, EAC, VAC", helpHtml.indexOf("Manager EVM Pack") !== -1);
+      check("Item 4 provides Client and Manager report buttons", !!helpRoot.querySelector("#btnHelpClientRep") && !!helpRoot.querySelector("#btnHelpMgrRep"));
+
+      // Discipline 5: PM Advisor & Grounded Procedures
+      check("Library Item 5 covers PM Advisor & Procedure SOPs", helpHtml.indexOf("PM Advisor &amp; Procedure SOPs") !== -1 || helpHtml.indexOf("PM Advisor & Procedure SOPs") !== -1);
+      check("Item 5 covers Upload Company SOPs and BM25 Semantic Retrieval", helpHtml.indexOf("Upload Company SOPs") !== -1 && helpHtml.indexOf("BM25") !== -1);
+      check("Item 5 covers Strict Clause Citations", helpHtml.indexOf("Strict Clause Citations") !== -1);
+      check("Item 5 provides PM Advisor and Upload Procedures buttons", !!helpRoot.querySelector("#btnHelpAdv") && !!helpRoot.querySelector("#btnHelpProc"));
+
+      // Discipline 6: Change Control & Ripple Effects
+      check("Library Item 6 covers Change Control & Ripple Effects", helpHtml.indexOf("Change Control &amp; Ripple Effects") !== -1 || helpHtml.indexOf("Change Control & Ripple Effects") !== -1);
+      check("Item 6 covers Tri-Factor Impact Assessment (Cost, Schedule, Scope)", helpHtml.indexOf("Tri-Factor Impact Assessment") !== -1);
+      check("Item 6 covers Automated Card Generation upon approval", helpHtml.indexOf("Automated Card Generation") !== -1);
+      check("Item 6 covers Gantt & Critical Path Ripple", helpHtml.indexOf("Critical Path Ripple") !== -1 || helpHtml.indexOf("Gantt &amp; Critical Path") !== -1);
+      check("Item 6 provides Change Control Register action button", !!helpRoot.querySelector("#btnHelpCo"));
+
+      // 5. Keyboard shortcuts & Governance standards
+      check("Help view renders Keyboard Shortcuts panel", helpHtml.indexOf("Keyboard Shortcuts") !== -1);
+      check("Help view renders Engineering Governance Standards", helpHtml.indexOf("Engineering Governance Standards") !== -1);
+
+      // 6. askHelpAssistant AI Functionality (offline/fallback & online)
+      check("askHelpAssistant function is exposed", typeof Q.askHelpAssistant === "function");
+      
+      // Query 1: New Project
+      var resProj = await Q.askHelpAssistant("How do I set up a new project?");
+      check("askHelpAssistant answers project setup questions", !!(resProj && resProj.text && resProj.text.indexOf("New Project Setup") !== -1));
+      check("project setup answer includes actionable navigation", !!(resProj && resProj.actions && resProj.actions.length > 0));
+
+      // Query 2: Rules of Credit & Gantt
+      var resRoc = await Q.askHelpAssistant("How do Rules of Credit update the Gantt chart and EVM?");
+      check("askHelpAssistant answers RoC & Gantt sync questions", !!(resRoc && resRoc.text && resRoc.text.indexOf("Rules of Credit") !== -1));
+
+      // Query 3: Multi-Type Resources
+      var resRes = await Q.askHelpAssistant("How do I manage resources including machinery and materials?");
+      check("askHelpAssistant answers resource management questions", !!(resRes && resRes.text && resRes.text.indexOf("Multi-Type Resource") !== -1));
+
+      // Query 4: Reporting
+      var resRep = await Q.askHelpAssistant("What is the difference between client and manager reports?");
+      check("askHelpAssistant answers triple-audience reporting questions", !!(resRep && resRep.text && resRep.text.indexOf("Reporting") !== -1));
+
+      // Query 5: PM Advisor
+      var resAdv = await Q.askHelpAssistant("How do I upload procedures and ask the PM Advisor?");
+      check("askHelpAssistant answers PM Advisor & procedure questions", !!(resAdv && resAdv.text && resAdv.text.indexOf("PM Advisor") !== -1), resAdv ? resAdv.text.slice(0, 80) : "null");
+
+      // Query 6: Change Control
+      var resChg = await Q.askHelpAssistant("How does change control ripple into cards and Gantt?");
+      check("askHelpAssistant answers change control ripple questions", !!(resChg && resChg.text && resChg.text.indexOf("Change Control") !== -1));
     })();
 
     render();

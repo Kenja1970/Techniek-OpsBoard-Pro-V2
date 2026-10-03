@@ -44,17 +44,18 @@
               class="search"
               type="search"
               placeholder="Search cards, projects, people…  (press /)"
+              aria-label="Search cards, projects, or people (press /)"
               autocomplete="off"
             />
             <div id="searchResults" class="search-results" hidden></div>
           </div>
           <div class="topbar-actions">
             <label class="field-label inline" for="roleSelect">Role</label>
-            <select id="roleSelect" class="select select-sm" title="Simulated role"></select>
+            <select id="roleSelect" class="select select-sm" title="Simulated role" aria-label="Simulated role"></select>
             <button class="btn ghost" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
             <button class="btn ghost" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
-            <button class="btn ghost" id="themeBtn" title="Toggle theme">🌙</button>
-            <button class="btn primary" id="newCardBtn" title="New card (N)">+ New card</button>
+            <button class="btn ghost" id="themeBtn" title="Toggle theme" aria-label="Toggle dark or light theme">🌙</button>
+            <button class="btn primary" id="newCardBtn" title="New card (N)" aria-label="Create new work package card (N)">+ New card</button>
           </div>
         </header>
 

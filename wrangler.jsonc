@@ -47,6 +47,9 @@
       "localConnectionString": "postgres://postgres:postgres@localhost:5432/postgres"
     }
 	],
+	"triggers": {
+		"crons": ["0 12 * * 1,4"]
+	},
 	"ai": {
 		"binding": "AI"
 	},

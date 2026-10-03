@@ -9,10 +9,16 @@
  * .wrangler/ — so serving the root causes an infinite reload loop. Serving a
  * dedicated public/ mirror (with .wrangler/ left outside it) avoids the loop,
  * and regenerating the mirror on every dev/deploy start avoids stale-copy drift.
+ *
+ * Performance Budget Enforcement (§4.2):
+ * Deployed JS bundle: <= 170 KB gzipped
+ * Deployed CSS bundle: <= 60 KB gzipped
  */
-import { readdirSync, statSync, mkdirSync, copyFileSync, existsSync } from "node:fs";
+import { readdirSync, statSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { transformSync } from "esbuild";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "public");
@@ -40,11 +46,43 @@ mkdirSync(out, { recursive: true });
 let count = 0;
 for (const f of WEB_FILES) {
   const s = join(root, f);
-  if (existsSync(s)) { copyFileSync(s, join(out, f)); count++; }
+  if (!existsSync(s)) continue;
+
+  if (f === "app.js") {
+    const raw = readFileSync(s, "utf8");
+    const minified = transformSync(raw, { minify: true, target: "es2020" }).code;
+    const dest = join(out, f);
+    writeFileSync(dest, minified, "utf8");
+    const gz = gzipSync(minified);
+    const gzKb = gz.length / 1024;
+    console.log(`sync-public: optimized ${f} -> ${(minified.length / 1024).toFixed(1)} KB (gzip: ${gzKb.toFixed(1)} KB / limit: 170 KB)`);
+    if (gzKb > 170) {
+      console.error(`PERFORMANCE BUDGET BREACH: ${f} gzipped size is ${gzKb.toFixed(1)} KB > 170 KB budget`);
+      process.exit(1);
+    }
+    count++;
+  } else if (f === "styles.css") {
+    const raw = readFileSync(s, "utf8");
+    const minified = transformSync(raw, { loader: "css", minify: true }).code;
+    const dest = join(out, f);
+    writeFileSync(dest, minified, "utf8");
+    const gz = gzipSync(minified);
+    const gzKb = gz.length / 1024;
+    console.log(`sync-public: optimized ${f} -> ${(minified.length / 1024).toFixed(1)} KB (gzip: ${gzKb.toFixed(1)} KB / limit: 60 KB)`);
+    if (gzKb > 60) {
+      console.error(`PERFORMANCE BUDGET BREACH: ${f} gzipped size is ${gzKb.toFixed(1)} KB > 60 KB budget`);
+      process.exit(1);
+    }
+    count++;
+  } else {
+    copyFileSync(s, join(out, f));
+    count++;
+  }
 }
+
 for (const d of WEB_DIRS) {
   const s = join(root, d);
   if (existsSync(s)) { copyDir(s, join(out, d)); count++; }
 }
 
-console.log("sync-public: mirrored " + count + " web entries from root -> public/");
+console.log("sync-public: mirrored and verified " + count + " web entries from root -> public/");

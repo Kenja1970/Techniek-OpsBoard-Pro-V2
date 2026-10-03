@@ -250,7 +250,7 @@ async function handleApi(request, env, ctx, url) {
     }
 
     if (url.pathname === '/api/assistant/health' && request.method === 'GET') {
-      return json({ configured: !!(env.LLM_API_KEY && env.LLM_MODEL), model: env.LLM_MODEL || null });
+      return json({ configured: !!((env.LLM_API_KEY || env.OPENROUTER_API_KEY) && env.LLM_MODEL), model: env.LLM_MODEL || null });
     }
 
     if (url.pathname === '/api/guidelines/search' && request.method === 'POST') {
@@ -350,6 +350,28 @@ export default {
     if (url.pathname === '/api/public/request-access' && request.method === 'POST') {
       return handleAccessRequest(request, env, ctx, getDbClient, closeDbClient);
     }
+    // Unauthenticated health / keepalive ping to maintain active Supabase status
+    if (url.pathname === '/api/public/keepalive' || url.pathname === '/api/healthz') {
+      let client;
+      try {
+        client = await getDbClient(env);
+        const res = await client.query('SELECT 1 AS keepalive, NOW() AS ts;');
+        return json({
+          ok: true,
+          db: 'connected',
+          timestamp: res.rows && res.rows[0] ? res.rows[0].ts : new Date().toISOString(),
+          message: 'Supabase database pinged successfully'
+        }, 200);
+      } catch (err) {
+        return json({
+          ok: false,
+          db: 'error',
+          error: String(err && err.message || err)
+        }, 503);
+      } finally {
+        if (client) await closeDbClient(client);
+      }
+    }
     // Nothing else under /api/public/ exists; refuse rather than fall through
     // to the authenticated handler.
     if (url.pathname.startsWith('/api/public/')) {
@@ -372,5 +394,23 @@ export default {
     if (page) return servePage(env, url, page, request);
 
     return env.ASSETS.fetch(request);
+  },
+
+  /**
+   * Cron Trigger scheduled handler.
+   * Periodically pings Supabase via Hyperdrive to prevent database project inactivity pausing.
+   */
+  async scheduled(event, env, ctx) {
+    console.log('[scheduled] Supabase keepalive ping initiated at', new Date().toISOString());
+    let client;
+    try {
+      client = await getDbClient(env);
+      const res = await client.query('SELECT 1 AS keepalive, NOW() AS ts;');
+      console.log('[scheduled] Supabase keepalive succeeded:', res.rows && res.rows[0]);
+    } catch (err) {
+      console.error('[scheduled] Supabase keepalive failed:', err);
+    } finally {
+      if (client) await closeDbClient(client);
+    }
   },
 };
