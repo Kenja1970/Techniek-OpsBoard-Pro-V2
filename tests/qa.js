@@ -1348,6 +1348,24 @@
       Q.deleteUser(activeUser, true);
       check("deleteUser protects currently active profile from accidental deletion", Q.accounts().users.length === countBeforeSelfDelete);
 
+      // Master Admin role permission & deletion protection
+      Q.state().settings.role = "Master Admin";
+      check("canAdministerUsers permits Master Admin", Q.canAdministerUsers() === true);
+      check("canFinanceFor permits Master Admin", Q.canFinanceFor("Master Admin") === true);
+      check("canChangeRoleFor permits Master Admin", Q.canChangeRoleFor("Master Admin") === true);
+
+      // Create a test Master Admin profile to verify deleteUser protection
+      Q.createUser("Test Master Admin", "", "Master Admin");
+      var masterProfile = Q.accounts().users.filter(function (u) { return u.displayName === "Test Master Admin"; })[0];
+      check("Master Admin profile created", !!masterProfile);
+      if (masterProfile) {
+        var countBeforeMasterDelete = Q.accounts().users.length;
+        var delResult = Q.deleteUser(masterProfile, true);
+        check("deleteUser blocks deletion of Master Admin profile", delResult === false && Q.accounts().users.length === countBeforeMasterDelete);
+        // Force cleanup test user directly from accounts array
+        Q.accounts().users = Q.accounts().users.filter(function (u) { return u.id !== masterProfile.id; });
+      }
+
       // Cleanup created test user
       if (addedUser) {
         // Switch back to original user if needed

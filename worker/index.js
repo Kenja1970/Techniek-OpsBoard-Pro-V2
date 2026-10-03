@@ -2,7 +2,7 @@ import { verifyAccessJWT } from './auth.js';
 import { getDbClient, closeDbClient } from './db.js';
 import { resolveUser, resolveWorkspaceId, isActive } from './users.js';
 import { readWorkspace, writeWorkspace } from './workspace.js';
-import { isAdmin, listUsers, setStatus, setRole, recentAudit,
+import { isAdmin, isMasterAdmin, listUsers, setStatus, setRole, updateProfile, recentAudit,
          listAccessRequests, decideAccessRequest,
          createUser, deleteUser, listWorkspaces } from './admin.js';
 import { ingestDocument, listDocuments, searchGuidelines, deleteDocument } from './guidelines.js';
@@ -66,6 +66,7 @@ async function handleApi(request, env, ctx, url) {
         displayName: user.display_name,
         status: user.status,
         role: user.global_role,
+        isMasterAdmin: isMasterAdmin(user),
         workspaceId,
       });
     }
@@ -132,6 +133,16 @@ async function handleApi(request, env, ctx, url) {
           if (!body || typeof body.state !== 'object' || body.state === null) {
             return json({ error: 'Request body must include a workspace state object.' }, 400);
           }
+          // Protect Master Admin workspaces from modification by non-Master Admins
+          const targetMember = await client.query(
+            `SELECT u.global_role FROM workspace_members m
+               JOIN users u ON u.id = m.user_id
+              WHERE m.workspace_id = $1 LIMIT 1`,
+            [wsId]
+          );
+          if (targetMember.rows.length && targetMember.rows[0].global_role === 'Master Admin' && !isMasterAdmin(user)) {
+            return json({ error: 'Forbidden', detail: 'Only a Master Admin can modify a Master Admin workspace.' }, 403);
+          }
           const result = await writeWorkspace(client, wsId, user.id, body.state, body.rev);
           if (result.conflict) {
             return json({ error: 'Conflict', rev: result.current.rev, state: result.current.state }, 409);
@@ -169,6 +180,7 @@ async function handleApi(request, env, ctx, url) {
         let result;
         if (parts[4] === 'status') result = await setStatus(client, user, targetId, body.status);
         else if (parts[4] === 'role') result = await setRole(client, user, targetId, body.role);
+        else if (parts[4] === 'profile') result = await updateProfile(client, user, targetId, body);
         else return json({ error: 'Unknown admin action' }, 404);
 
         if (result.error) return json({ error: result.error }, result.code || 400);

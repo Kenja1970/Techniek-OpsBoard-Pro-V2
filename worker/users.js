@@ -57,13 +57,13 @@ export async function resolveUser(client, identity) {
     `INSERT INTO users (id, email, display_name, status, global_role, org_id, last_seen_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
      RETURNING id, email, display_name, status, global_role, org_id`,
-    [id, email, email.split("@")[0], isFirst ? "active" : "pending", isFirst ? "Admin" : DEFAULT_ROLE, orgId]
+    [id, email, email.split("@")[0], isFirst ? "active" : "pending", isFirst ? "Master Admin" : DEFAULT_ROLE, orgId]
   );
 
   await client.query(
     `INSERT INTO audit_logs (actor_id, action, entity, entity_id, detail)
      VALUES ($1, $2, $3, $4, $5)`,
-    [id, isFirst ? "user.bootstrap_admin" : "user.registered", "user", id, JSON.stringify({ email })]
+    [id, isFirst ? "user.bootstrap_master_admin" : "user.registered", "user", id, JSON.stringify({ email })]
   );
 
   return inserted.rows[0];
@@ -74,27 +74,52 @@ export async function resolveUser(client, identity) {
  * sharing one with a colleague later is an INSERT rather than a schema change.
  */
 export async function resolveWorkspaceId(client, user, schemaVersion) {
+  // Fast-path: deterministically find user's primary active workspace in the org.
+  // ORDER BY updated_at DESC, id ASC ensures saves stay pinned to the same active workspace,
+  // preventing workspace-hopping ping-pong and revision conflicts.
   const member = await client.query(
     `SELECT w.id FROM workspaces w
       JOIN workspace_members m ON m.workspace_id = w.id
      WHERE m.user_id = $1 AND w.org_id = $2
-     ORDER BY w.updated_at ASC
+     ORDER BY w.updated_at DESC, w.id ASC
      LIMIT 1`,
     [user.id, DEFAULT_ORG_ID]
   );
   if (member.rows.length) return member.rows[0].id;
 
-  const workspaceId = newId("ws");
-  await client.query(
-    `INSERT INTO workspaces (id, org_id, state, rev, schema_version, updated_by)
-     VALUES ($1, $2, $3::jsonb, 0, $4, $5)`,
-    [workspaceId, DEFAULT_ORG_ID, "{}", schemaVersion || "6.0.0", user.id]
-  );
-  await client.query(
-    "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)",
-    [workspaceId, user.id, user.global_role || DEFAULT_ROLE]
-  );
-  return workspaceId;
+  // Protect against concurrent requests creating duplicate workspaces for a brand-new user.
+  await client.query("BEGIN");
+  try {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('user_ws_' || $1))", [user.id]);
+    const recheck = await client.query(
+      `SELECT w.id FROM workspaces w
+        JOIN workspace_members m ON m.workspace_id = w.id
+       WHERE m.user_id = $1 AND w.org_id = $2
+       ORDER BY w.updated_at DESC, w.id ASC
+       LIMIT 1`,
+      [user.id, DEFAULT_ORG_ID]
+    );
+    if (recheck.rows.length) {
+      await client.query("COMMIT");
+      return recheck.rows[0].id;
+    }
+
+    const workspaceId = newId("ws");
+    await client.query(
+      `INSERT INTO workspaces (id, org_id, state, rev, schema_version, updated_by)
+       VALUES ($1, $2, $3::jsonb, 0, $4, $5)`,
+      [workspaceId, DEFAULT_ORG_ID, "{}", schemaVersion || "6.0.0", user.id]
+    );
+    await client.query(
+      "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)",
+      [workspaceId, user.id, user.global_role || DEFAULT_ROLE]
+    );
+    await client.query("COMMIT");
+    return workspaceId;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  }
 }
 
 export function isActive(user) {

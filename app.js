@@ -96,6 +96,7 @@
   var COLUMN_RENDER_CAP = 20;
 
   var ROLES = [
+    "Master Admin",
     "Admin",
     "Department Manager",
     "Project Manager",
@@ -104,13 +105,13 @@
     "Viewer",
   ];
   // Roles allowed to see cost / revenue / margin.
-  var FINANCIAL_ROLES = ["Admin", "Department Manager", "Project Manager", "Resource Manager"];
-  var RESOURCE_MANAGE_ROLES = ["Admin", "Department Manager", "Project Manager", "Resource Manager"];
+  var FINANCIAL_ROLES = ["Master Admin", "Admin", "Department Manager", "Project Manager", "Resource Manager"];
+  var RESOURCE_MANAGE_ROLES = ["Master Admin", "Admin", "Department Manager", "Project Manager", "Resource Manager"];
   // Roles allowed to administer governance registers (risks, change control,
   // decisions, project administration). Per the V15 security-role requirement,
   // team members (Engineer / Contributor) get read-only access to Risks,
   // Changes, and Decisions but may still raise and edit Issues.
-  var REGISTER_GOVERN_ROLES = ["Admin", "Department Manager", "Project Manager", "Resource Manager"];
+  var REGISTER_GOVERN_ROLES = ["Master Admin", "Admin", "Department Manager", "Project Manager", "Resource Manager"];
   var RESOURCE_TYPES = ["Employee", "Subcontractor", "Tool / Software", "Equipment", "Facility", "Material", "Other"];
   var BILLING_TYPES = ["T&M", "FP"];
   var READONLY_ROLES = ["Viewer"];
@@ -802,13 +803,17 @@
                      requests: [], requestsLoaded: false, requestsLoading: false,
                      workspaces: [], workspacesLoaded: false, workspacesLoading: false };
 
+  function isServerMasterAdmin() {
+    return serverSession.active && (serverSession.isMasterAdmin || serverSession.role === "Master Admin");
+  }
+
   function isServerAdmin() {
-    return serverSession.active && serverSession.role === "Admin";
+    return serverSession.active && (serverSession.role === "Admin" || serverSession.role === "Master Admin" || serverSession.isMasterAdmin);
   }
 
   function canAdministerUsers() {
     if (serverSession && serverSession.active) return isServerAdmin();
-    return role() === "Admin" || (accounts && accounts.users && accounts.users.length <= 1);
+    return role() === "Admin" || role() === "Master Admin" || (accounts && accounts.users && accounts.users.length <= 1);
   }
 
   // The trial is the app's existing local-only mode on a public URL: demo data,
@@ -1188,6 +1193,9 @@
         if (!syncState.hadCachedBeforeLoad) {
           state = blankWorkspace();
         }
+        state.rev = data.rev || 0;
+        syncState.serverRev = data.rev || 0;
+        cacheLocal();
         syncState.hydrating = false;
         render();
         pushToServer();
@@ -1211,7 +1219,10 @@
       var res = await fetch(workspaceEndpoint(), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: state, rev: syncState.serverRev })
+        body: JSON.stringify({
+          state: state,
+          rev: Number.isFinite(Number(syncState.serverRev)) ? Number(syncState.serverRev) : (Number.isFinite(Number(state && state.rev)) ? Number(state.rev) : 0)
+        })
       });
 
       if (res.ok) {
@@ -1366,7 +1377,7 @@
     var initialHash = (typeof window !== "undefined" && window.location && window.location.hash) ? String(window.location.hash).replace(/^#\/?/, "").trim() : "";
     ui.view = (initialHash && VIEWS[initialHash]) ? initialHash : "dashboard";
     render();
-    if (!localStorage.getItem(wsKey(userId))) save();
+    if (!serverSession.active && !localStorage.getItem(wsKey(userId))) save();
     triggerDatabaseKeepalive();
     toast("Signed in as " + (userById(userId) || {}).displayName, "ok");
   }
@@ -1536,6 +1547,10 @@
   function deleteUser(user, skipConfirm) {
     if (user.id === accounts.currentUserId) {
       toast("You cannot delete your own signed-in profile", "err");
+      return false;
+    }
+    if (user.role === "Master Admin") {
+      toast("Master Admin profile is permanent and cannot be deleted", "err");
       return false;
     }
     if (accounts.users.length <= 1) {
@@ -1716,7 +1731,7 @@
     // not a preference. Project Managers may configure project policy, but only
     // a server-confirmed Admin may simulate another role. Local/demo mode keeps
     // the control available only while already acting as Admin.
-    return serverSession.active ? isServerAdmin() : role() === "Admin";
+    return serverSession.active ? isServerAdmin() : (role() === "Admin" || role() === "Master Admin");
   }
   function workspaceTabs() {
     var tabs = ["Summary", "WBS List", "Kanban", "Gantt", "Resources"];
@@ -10077,6 +10092,7 @@
   }
 
   function adminCreateUserPrompt() {
+    var assignable = isServerMasterAdmin() ? ROLES : ROLES.filter(function (r) { return r !== "Master Admin"; });
     var body = el("div");
     body.innerHTML =
       "<div class='form-grid'>" +
@@ -10085,7 +10101,7 @@
       "<div class='form-row'><label class='field-label inline'>Display name</label>" +
       "<input class='input' id='nuName' placeholder='optional'></div>" +
       "<div class='form-row'><label class='field-label inline'>Role</label>" +
-      "<select class='select' id='nuRole'>" + ROLES.map(function (r) {
+      "<select class='select' id='nuRole'>" + assignable.map(function (r) {
         return "<option" + (r === "Project Manager" ? " selected" : "") + ">" + esc(r) + "</option>";
       }).join("") + "</select></div>" +
       "<div class='form-row full'><label class='field-label inline'>Status</label>" +
@@ -10228,8 +10244,14 @@
       } else if (w.owner_email === serverSession.email) {
         act.appendChild(el("span", { class: "chip sm ok" }, "yours"));
       } else {
+        var ownerUser = adminState.users.filter(function (u) { return u.email === w.owner_email || u.id === w.owner_id; })[0];
+        var isOwnerMaster = ownerUser && ownerUser.global_role === "Master Admin";
         act.appendChild(mkBtn("Open workspace", "btn sm ghost", function () { adminOpenWorkspace(w); }));
-        act.appendChild(mkBtn("Reset to setup", "btn sm danger", function () { adminResetWorkspace(w); }));
+        if (isOwnerMaster && !isServerMasterAdmin()) {
+          act.appendChild(el("span", { class: "chip sm faint", title: "Master Admin workspace is protected." }, "protected"));
+        } else {
+          act.appendChild(mkBtn("Reset to setup", "btn sm danger", function () { adminResetWorkspace(w); }));
+        }
       }
       tr.appendChild(act);
       tb.appendChild(tr);
@@ -10260,6 +10282,117 @@
       .catch(function (e) { toast("Could not reach the server: " + e.message, "err"); });
   }
 
+  function adminEditServerUserModal(u) {
+    var viewerIsMaster = isServerMasterAdmin();
+    var targetIsMaster = u.global_role === "Master Admin";
+    var targetIsAdmin = u.global_role === "Admin" || targetIsMaster;
+    var canEditThisUser = viewerIsMaster || (!targetIsMaster && !targetIsAdmin);
+
+    var body = el("div");
+    var assignableRoles = viewerIsMaster ? ROLES : ROLES.filter(function (r) { return r !== "Master Admin"; });
+
+    body.innerHTML =
+      "<div class='form-grid'>" +
+      "<div class='form-row full'><label class='field-label inline'>Email</label>" +
+      "<input class='input' value='" + esc(u.email) + "' disabled style='background:var(--surface-2);opacity:0.8'></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Display name</label>" +
+      "<input class='input' id='esuName' value='" + esc(u.display_name || "") + "'" + (canEditThisUser ? "" : " disabled") + "></div>" +
+      "<div class='form-row full'><label class='field-label inline'>Assigned role</label>" +
+      (canEditThisUser
+        ? "<select class='select' id='esuRole'>" + assignableRoles.map(function (r) {
+            return "<option" + (r === u.global_role ? " selected" : "") + ">" + esc(r) + "</option>";
+          }).join("") + "</select>"
+        : "<input class='input' value='" + esc(u.global_role) + "' disabled style='background:var(--surface-2)'>") +
+      "</div>" +
+      "<div class='form-row full'><label class='field-label inline'>Account status</label>" +
+      "<div class='row gap-sm' style='align-items:center'>" +
+      "<span class='chip sm " + accountStatusClass(u.status) + "'>" + esc(u.status) + "</span>" +
+      (targetIsMaster ? "<span class='chip sm ok' style='font-weight:700'>★ Permanent Master Admin</span>" : "") +
+      "</div></div>" +
+      "</div>" +
+      "<div class='divider mt mb'></div>" +
+      "<h3>Access & Password Recovery</h3>" +
+      "<p class='muted' style='font-size:13px'>Cloudflare Access verifies users via one-time PIN sent to their email. Generate a sign-in or access link to provide instant access or password recovery instructions.</p>" +
+      "<div class='row gap-sm wrap mt mb'>" +
+      "<a class='btn sm primary' id='esuEmailLink' href='#' target='_blank'>✉ Generate Sign-in / PW Reset Email</a>" +
+      "</div>" +
+      "<div class='divider mt mb'></div>" +
+      "<h3>Workspace Oversight</h3>" +
+      "<p class='muted' style='font-size:13px'>Inspect this user's project data and controls directly in your browser. All session actions are recorded in the audit log.</p>" +
+      "<div class='row gap-sm wrap mt'>" +
+      "<button class='btn sm' id='esuInspectWsBtn'>🔍 Open &amp; Inspect Workspace</button>" +
+      "</div>";
+
+    var subject = encodeURIComponent("Your Techniek OpsBoard Pro Sign-in / Access Link");
+    var emailBody = encodeURIComponent(
+      "Hello " + (u.display_name || u.email) + ",\n\n" +
+      "You can sign in or reset your access to Techniek OpsBoard Pro V2 at:\n" +
+      location.origin + "/app\n\n" +
+      "Use your registered email (" + u.email + "). Cloudflare Access will email you a secure one-time PIN to authenticate.\n\n" +
+      "Role: " + u.global_role + "\n" +
+      "— Engineering Project Controls Admin"
+    );
+    var mailLink = body.querySelector("#esuEmailLink");
+    mailLink.href = "mailto:" + encodeURIComponent(u.email) + "?subject=" + subject + "&body=" + emailBody;
+
+    body.querySelector("#esuInspectWsBtn").addEventListener("click", function () {
+      closeModal();
+      var ws = (adminState.workspaces || []).filter(function (w) { return w.owner_email === u.email || w.owner_id === u.id; })[0];
+      if (ws) {
+        adminOpenWorkspace(ws);
+      } else {
+        fetch("/api/admin/workspaces")
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var foundWs = (d && d.workspaces ? d.workspaces : []).filter(function (w) { return w.owner_email === u.email || w.owner_id === u.id; })[0];
+            if (foundWs) adminOpenWorkspace(foundWs);
+            else toast("No workspace found for " + u.email, "err");
+          })
+          .catch(function (e) { toast("Could not inspect workspace: " + e.message, "err"); });
+      }
+    });
+
+    var modalBtns = [{ label: "Cancel", cls: "btn", fn: closeModal }];
+    if (canEditThisUser) {
+      modalBtns.push({
+        label: "Save Changes",
+        cls: "btn primary",
+        fn: function () {
+          var newName = $("#esuName").value.trim();
+          var newRole = $("#esuRole") ? $("#esuRole").value : u.global_role;
+          if (!newName) { toast("Display name is required", "err"); return; }
+
+          var promises = [];
+          if (newName !== (u.display_name || "")) {
+            promises.push(fetch("/api/admin/users/" + encodeURIComponent(u.id) + "/profile", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ displayName: newName })
+            }).then(function (r) { return r.json(); }));
+          }
+          if (newRole !== u.global_role) {
+            promises.push(fetch("/api/admin/users/" + encodeURIComponent(u.id) + "/role", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ role: newRole })
+            }).then(function (r) { return r.json(); }));
+          }
+
+          if (!promises.length) { closeModal(); return; }
+
+          Promise.all(promises).then(function (results) {
+            for (var i = 0; i < results.length; i++) {
+              if (results[i].error) { toast(results[i].error, "err"); return; }
+            }
+            closeModal();
+            toast("User details updated for " + u.email, "ok");
+            adminFetchUsers(true);
+          }).catch(function (e) { toast("Update failed: " + e.message, "err"); });
+        }
+      });
+    }
+
+    modal("Manage User · " + esc(u.display_name || u.email), body, modalBtns);
+  }
+
   function renderAdminTable(host) {
     host.innerHTML = "";
 
@@ -10280,35 +10413,47 @@
 
     rows.forEach(function (u) {
       var isSelf = u.email === serverSession.email;
+      var viewerIsMaster = isServerMasterAdmin();
+      var targetIsMaster = u.global_role === "Master Admin";
+      var targetIsAdmin = u.global_role === "Admin" || targetIsMaster;
       var tr = el("tr");
 
       tr.appendChild(el("td", null,
         "<div class='row gap-sm'><span class='avatar' style='background:" + avatarColor(u.display_name || u.email) + "'>" +
         esc(initials(u.display_name || u.email)) + "</span><div><strong>" + esc(u.display_name || u.email) + "</strong>" +
         (isSelf ? " <span class='chip sm'>you</span>" : "") +
+        (targetIsMaster ? " <span class='chip sm ok' style='font-weight:700'>★ Master Admin</span>" : "") +
         "<div class='faint'>" + esc(u.email) + "</div></div></div>"));
 
       tr.appendChild(el("td", null,
         "<span class='chip sm " + accountStatusClass(u.status) + "'>" + esc(u.status) + "</span>"));
 
       var roleCell = el("td");
-      var roleSel = el("select", { class: "select select-sm" });
-      roleSel.innerHTML = ROLES.map(function (r) {
-        return "<option" + (r === u.global_role ? " selected" : "") + ">" + esc(r) + "</option>";
-      }).join("");
-      roleSel.addEventListener("change", function () {
-        var next = this.value;
-        var self = this;
-        confirmModal("Change role to " + next + "?",
-          (u.display_name || u.email) + " will get the permissions of " + next + " the next time their board loads.",
-          function () {
-            adminPost("/api/admin/users/" + encodeURIComponent(u.id) + "/role", { role: next },
-              "Role updated to " + next);
-          });
-        // Revert the control until the server confirms; the refresh redraws it.
-        self.value = u.global_role;
-      });
-      roleCell.appendChild(roleSel);
+      if (targetIsMaster && !viewerIsMaster) {
+        roleCell.innerHTML = "<span class='chip sm ok' style='font-weight:700'>★ Master Admin</span>";
+      } else {
+        var roleSel = el("select", { class: "select select-sm" });
+        var assignable = viewerIsMaster ? ROLES : ROLES.filter(function (r) { return r !== "Master Admin"; });
+        roleSel.innerHTML = assignable.map(function (r) {
+          return "<option" + (r === u.global_role ? " selected" : "") + ">" + esc(r) + "</option>";
+        }).join("");
+        if (targetIsAdmin && !viewerIsMaster && !isSelf) {
+          roleSel.disabled = true;
+          roleSel.title = "Only Master Admin can modify administrator roles.";
+        }
+        roleSel.addEventListener("change", function () {
+          var next = this.value;
+          var self = this;
+          confirmModal("Change role to " + next + "?",
+            (u.display_name || u.email) + " will get the permissions of " + next + " the next time their board loads.",
+            function () {
+              adminPost("/api/admin/users/" + encodeURIComponent(u.id) + "/role", { role: next },
+                "Role updated to " + next);
+            });
+          self.value = u.global_role;
+        });
+        roleCell.appendChild(roleSel);
+      }
       tr.appendChild(roleCell);
 
       tr.appendChild(el("td", { class: "muted" },
@@ -10318,17 +10463,30 @@
       if (u.status === "pending") {
         actions.appendChild(mkBtn("Approve", "btn sm primary", function () { adminSetStatus(u, "active"); }));
       } else if (u.status === "active") {
-        var susp = mkBtn("Suspend", "btn sm danger", function () { adminSetStatus(u, "suspended"); });
-        if (isSelf) { susp.disabled = true; susp.title = "You cannot suspend your own account."; }
-        actions.appendChild(susp);
+        if (targetIsMaster) {
+          actions.appendChild(el("span", { class: "chip sm faint", title: "Master Admin accounts cannot be suspended." }, "Protected"));
+        } else {
+          var susp = mkBtn("Suspend", "btn sm danger", function () { adminSetStatus(u, "suspended"); });
+          if (isSelf) { susp.disabled = true; susp.title = "You cannot suspend your own account."; }
+          else if (targetIsAdmin && !viewerIsMaster) { susp.disabled = true; susp.title = "Only Master Admin can suspend administrators."; }
+          actions.appendChild(susp);
+        }
       } else {
         actions.appendChild(mkBtn("Reactivate", "btn sm", function () { adminSetStatus(u, "active"); }));
       }
-      if (!isSelf) {
-        actions.appendChild(mkBtn("Delete", "btn sm danger", function () { adminDeleteUser(u); }));
-      }
-      tr.appendChild(actions);
 
+      if (!isSelf && !targetIsMaster) {
+        var delBtn = mkBtn("Delete", "btn sm danger", function () { adminDeleteUser(u); });
+        if (targetIsAdmin && !viewerIsMaster) {
+          delBtn.disabled = true;
+          delBtn.title = "Only Master Admin can delete administrators.";
+        }
+        actions.appendChild(delBtn);
+      }
+
+      actions.appendChild(mkBtn("⚙ Adjust / PW", "btn sm", function () { adminEditServerUserModal(u); }));
+
+      tr.appendChild(actions);
       tb.appendChild(tr);
     });
 
@@ -12989,6 +13147,7 @@
       email: me.email,
       status: me.status,
       role: me.role,
+      isMasterAdmin: !!(me.isMasterAdmin || me.role === "Master Admin"),
       workspaceId: me.workspaceId
     };
 
@@ -13163,7 +13322,7 @@
       canFinanceFor: function (r) { return FINANCIAL_ROLES.indexOf(r) !== -1; },
       canEditFor: function (r) { return READONLY_ROLES.indexOf(r) === -1; },
       canConfigureWorkspaceFor: function (r) { return READONLY_ROLES.indexOf(r) === -1; },
-      canChangeRoleFor: function (r) { return r === "Admin"; },
+      canChangeRoleFor: function (r) { return r === "Admin" || r === "Master Admin"; },
       workspaceTabsFor: function (r) {
         var tabs = ["Summary", "WBS List", "Kanban", "Gantt", "Resources"];
         if (FINANCIAL_ROLES.indexOf(r) !== -1) tabs.push("Financials");

@@ -45,11 +45,18 @@ export async function writeWorkspace(client, workspaceId, userId, incomingState,
   if (!current.rows.length) return { ok: false, notFound: true };
 
   const serverRev = current.rows[0].rev;
-  const serverHasData = current.rows[0].state !== null;
+  const stateObj = current.rows[0].state;
+  // A workspace only has data if state contains boards. An empty shell (e.g. {} or null)
+  // has no user data and can be initialized without false optimistic concurrency conflicts.
+  const serverHasData = stateObj !== null && typeof stateObj === 'object' &&
+    Array.isArray(stateObj.boards) && stateObj.boards.length > 0;
+
+  const expRevNum = Number(expectedRev);
+  const revMatches = !Number.isNaN(expRevNum) && expRevNum === Number(serverRev);
 
   // A first write against an empty workspace always wins: the client is
   // seeding the server from whatever it already had locally.
-  if (serverHasData && Number(expectedRev) !== Number(serverRev)) {
+  if (serverHasData && !revMatches) {
     return {
       ok: false,
       conflict: true,

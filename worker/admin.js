@@ -4,6 +4,7 @@
 // top-bar role selector in the UI is a demo aid and is never consulted.
 
 const ROLES = [
+  "Master Admin",
   "Admin",
   "Department Manager",
   "Project Manager",
@@ -13,8 +14,12 @@ const ROLES = [
 ];
 const STATUSES = ["pending", "active", "suspended"];
 
+export function isMasterAdmin(user) {
+  return user && user.status === "active" && user.global_role === "Master Admin";
+}
+
 export function isAdmin(user) {
-  return user && user.status === "active" && user.global_role === "Admin";
+  return user && user.status === "active" && (user.global_role === "Admin" || user.global_role === "Master Admin");
 }
 
 export async function listUsers(client) {
@@ -24,6 +29,7 @@ export async function listUsers(client) {
             (SELECT COUNT(*)::int FROM workspace_members m WHERE m.user_id = u.id) AS workspaces
        FROM users u
       ORDER BY
+        CASE u.global_role WHEN 'Master Admin' THEN 0 WHEN 'Admin' THEN 1 ELSE 2 END,
         CASE u.status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
         u.created_at ASC`
   );
@@ -41,7 +47,7 @@ async function audit(client, actorId, action, targetId, detail) {
 async function countOtherActiveAdmins(client, excludeUserId) {
   const res = await client.query(
     `SELECT COUNT(*)::int AS n FROM users
-      WHERE global_role = 'Admin' AND status = 'active' AND id <> $1`,
+      WHERE (global_role = 'Admin' OR global_role = 'Master Admin') AND status = 'active' AND id <> $1`,
     [excludeUserId]
   );
   return res.rows[0].n;
@@ -64,7 +70,16 @@ export async function setStatus(client, actor, targetId, status) {
   if (!found.rows.length) return { error: "User not found.", code: 404 };
   const target = found.rows[0];
 
-  if (target.global_role === "Admin" && status !== "active") {
+  // Master Admin accounts are permanent and cannot be suspended
+  if (target.global_role === "Master Admin") {
+    return { error: "Master Admin accounts cannot be suspended.", code: 403 };
+  }
+  // Only Master Admin can suspend other administrators
+  if (target.global_role === "Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can change the status of an administrator.", code: 403 };
+  }
+
+  if ((target.global_role === "Admin" || target.global_role === "Master Admin") && status !== "active") {
     if ((await countOtherActiveAdmins(client, targetId)) === 0) {
       return { error: "This is the last active administrator. Promote someone else first.", code: 409 };
     }
@@ -93,8 +108,21 @@ export async function setRole(client, actor, targetId, role) {
   if (!found.rows.length) return { error: "User not found.", code: 404 };
   const target = found.rows[0];
 
+  // Protect Master Admin from modification by regular Admins
+  if (target.global_role === "Master Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can modify Master Admin accounts.", code: 403 };
+  }
+  // Only a Master Admin can grant the Master Admin role
+  if (role === "Master Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can grant the Master Admin role.", code: 403 };
+  }
+  // Regular Admins cannot demote other Admins
+  if (target.global_role === "Admin" && !isMasterAdmin(actor) && targetId !== actor.id) {
+    return { error: "Only a Master Admin can demote other administrators.", code: 403 };
+  }
+
   // Demoting the only administrator leaves nobody who can approve accounts.
-  if (target.global_role === "Admin" && role !== "Admin") {
+  if ((target.global_role === "Admin" || target.global_role === "Master Admin") && role !== "Admin" && role !== "Master Admin") {
     if ((await countOtherActiveAdmins(client, targetId)) === 0) {
       return { error: "This is the last active administrator. Promote someone else first.", code: 409 };
     }
@@ -111,6 +139,32 @@ export async function setRole(client, actor, targetId, role) {
 
   await audit(client, actor.id, "user.role_changed", targetId, {
     email: target.email, from: target.global_role, to: role,
+  });
+  return { user: updated.rows[0] };
+}
+
+export async function updateProfile(client, actor, targetId, input) {
+  const found = await client.query("SELECT id, email, display_name, global_role FROM users WHERE id = $1", [targetId]);
+  if (!found.rows.length) return { error: "User not found.", code: 404 };
+  const target = found.rows[0];
+
+  if (target.global_role === "Master Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can modify Master Admin accounts.", code: 403 };
+  }
+  if (target.global_role === "Admin" && !isMasterAdmin(actor) && targetId !== actor.id) {
+    return { error: "Only a Master Admin can modify other administrators.", code: 403 };
+  }
+
+  const displayName = String(input.displayName || "").trim().slice(0, 120);
+  if (!displayName) return { error: "Display name cannot be empty.", code: 400 };
+
+  const updated = await client.query(
+    `UPDATE users SET display_name = $1 WHERE id = $2
+     RETURNING id, email, display_name, status, global_role, created_at, last_seen_at`,
+    [displayName, targetId]
+  );
+  await audit(client, actor.id, "user.profile_updated", targetId, {
+    email: target.email, from: target.display_name, to: displayName,
   });
   return { user: updated.rows[0] };
 }
@@ -133,6 +187,11 @@ export async function createUser(client, actor, input) {
   }
   if (ROLES.indexOf(input.role) === -1) return { error: "Unknown role.", code: 400 };
   if (STATUSES.indexOf(input.status) === -1) return { error: "Unknown status.", code: 400 };
+
+  // Only Master Admin can create another Master Admin
+  if (input.role === "Master Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can create a Master Admin account.", code: 403 };
+  }
 
   const existing = await client.query("SELECT id FROM users WHERE email = $1", [email]);
   if (existing.rows.length) return { error: "An account already exists for that email.", code: 409 };
@@ -164,6 +223,16 @@ export async function deleteUser(client, actor, targetId) {
   const found = await client.query("SELECT id, email, global_role FROM users WHERE id = $1", [targetId]);
   if (!found.rows.length) return { error: "User not found.", code: 404 };
   const target = found.rows[0];
+
+  // Master Admin accounts are permanent and cannot be deleted by anyone
+  if (target.global_role === "Master Admin") {
+    return { error: "Master Admin accounts are permanent and cannot be deleted.", code: 403 };
+  }
+
+  // Only Master Admin can delete other administrators
+  if (target.global_role === "Admin" && !isMasterAdmin(actor)) {
+    return { error: "Only a Master Admin can delete other administrators.", code: 403 };
+  }
 
   if (target.global_role === "Admin" && (await countOtherActiveAdmins(client, targetId)) === 0) {
     return { error: "This is the last active administrator. Promote someone else first.", code: 409 };
