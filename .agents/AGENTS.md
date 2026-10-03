@@ -230,6 +230,27 @@ Coverage is a floor, not a goal — mutation score is what proves the tests actu
 - In CI, zero high or critical from all four: `uvx pip-audit` (dependency CVEs) · `uv run bandit -r src` (Python SAST) · `trivy image` (container layers and OS packages) · `gitleaks` (secrets, also as a pre-commit hook)
 - SBOM generated per release. Dependencies pinned by `uv.lock`; automated update PRs reviewed weekly.
 - Never `pickle` untrusted input. Never `yaml.load` — use `safe_load`. Never `subprocess` with `shell=True` on interpolated input. Never `eval`/`exec` on anything that touched a network.
+## 5.4.1 Mandatory Security Standard
+
+Treat security as a first-class acceptance criterion for every application, feature, API, database change, script, configuration, and deployment. Apply production-grade secure engineering by default, even when security requirements are not explicitly stated.
+
+- Use deny-by-default authorization and least privilege. Every protected operation must verify the authenticated actor’s permission on the server at the time of the request.
+- Never trust client-supplied roles, ownership, identifiers, prices, permissions, workflow state, or other security-sensitive values.
+- Prevent horizontal and vertical privilege escalation. A user must never be able to access another user’s resources or create, assign, promote, impersonate, or modify privileged accounts—including admin, super-admin, owner, system, or “master admin” accounts—unless an independently authorized, server-enforced workflow explicitly permits it.
+- Do not rely on hidden UI elements, disabled controls, routes, middleware alone, or client-side validation as security boundaries.
+- Secure every entry point, including APIs, background jobs, webhooks, file operations, administrative tools, internal endpoints, and direct object references.
+- Validate inputs using strict allowlists and enforce authorization at the object, field, action, and tenant levels. Protect against injection, XSS, CSRF, SSRF, path traversal, unsafe deserialization, mass assignment, broken access control, race conditions, and insecure file handling.
+- Use established cryptographic libraries and secure defaults. Never invent cryptography, store plaintext passwords or secrets, expose credentials in code or logs, or weaken TLS and certificate verification.
+- Minimize sensitive-data collection and exposure. Encrypt sensitive data where appropriate, redact logs and errors, apply safe retention rules, and keep production secrets out of source control.
+- Use secure session and token handling, including appropriate expiration, rotation, revocation, cookie protections, anti-CSRF controls, and resistance to replay, fixation, and account enumeration.
+- Apply rate limiting, abuse controls, audit logging, dependency review, and safe failure behavior to security-sensitive functionality.
+- Preserve tenant isolation and privilege boundaries in database queries and mutations. Prefer database constraints and transactional enforcement for critical invariants.
+- Never add backdoors, universal credentials, undocumented bypasses, insecure development fallbacks, or fail-open behavior.
+- Before considering work complete, perform an adversarial review: assume the requester is malicious, authenticated only at the lowest privilege level, and able to modify every client request. Test both expected and forbidden paths, especially authentication, authorization, ownership, role changes, administrative operations, and cross-tenant access.
+- When requirements conflict with these controls, identify the security risk clearly and choose the secure implementation. Do not silently trade security for convenience or compatibility.
+- Treat any plausible privilege escalation, authentication bypass, secret exposure, cross-tenant access, or destructive unauthorized action as a release blocker. Fix it and add regression coverage before declaring the work complete.
+
+Security must be enforced by architecture and server-side controls—not by assumptions about normal user behavior.
 
 ### 5.5 Observability
 - Structured JSON logs with correlation/trace IDs propagated end-to-end

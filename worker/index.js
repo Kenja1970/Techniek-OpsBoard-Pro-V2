@@ -120,6 +120,16 @@ async function handleApi(request, env, ctx, url) {
         if (request.method === 'GET') {
           const ws = await readWorkspace(client, wsId);
           if (!ws) return json({ error: 'Workspace not found.' }, 404);
+          // Protect Master Admin workspaces from inspection by non-Master Admins
+          const targetMember = await client.query(
+            `SELECT u.global_role FROM workspace_members m
+               JOIN users u ON u.id = m.user_id
+              WHERE m.workspace_id = $1 LIMIT 1`,
+            [wsId]
+          );
+          if (targetMember.rows.length && targetMember.rows[0].global_role === 'Master Admin' && !isMasterAdmin(user)) {
+            return json({ error: 'Forbidden', detail: 'Only a Master Admin can inspect a Master Admin workspace.' }, 403);
+          }
           await client.query(
             `INSERT INTO audit_logs (workspace_id, actor_id, action, entity, entity_id, detail)
              VALUES ($1,$2,'admin.workspace_opened','workspace',$1,$3)`,

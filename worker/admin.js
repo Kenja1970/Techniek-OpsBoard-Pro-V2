@@ -335,6 +335,10 @@ export async function decideAccessRequest(client, actor, requestId, decision, no
         [requestRow.email]
       );
       if (existing.rows.length) {
+        if ((existing.rows[0].global_role === "Master Admin" || existing.rows[0].global_role === "Admin") && !isMasterAdmin(actor)) {
+          await client.query("ROLLBACK");
+          return { error: "Only a Master Admin can approve or activate administrator accounts.", code: 403 };
+        }
         // Preserve the role an administrator may already have assigned; only
         // activate the account.
         const active = await client.query(

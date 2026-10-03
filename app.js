@@ -104,6 +104,23 @@
     "Engineer / Contributor",
     "Viewer",
   ];
+  // Roles that regular Admins may assign or create. Master Admin is protected.
+  var DELEGATED_ADMIN_ROLES = [
+    "Admin",
+    "Department Manager",
+    "Project Manager",
+    "Resource Manager",
+    "Engineer / Contributor",
+    "Viewer",
+  ];
+  // Standard non-privileged roles for self-service or local unauthenticated profile creation
+  var STANDARD_USER_ROLES = [
+    "Department Manager",
+    "Project Manager",
+    "Resource Manager",
+    "Engineer / Contributor",
+    "Viewer",
+  ];
   // Roles allowed to see cost / revenue / margin.
   var FINANCIAL_ROLES = ["Master Admin", "Admin", "Department Manager", "Project Manager", "Resource Manager"];
   var RESOURCE_MANAGE_ROLES = ["Master Admin", "Admin", "Department Manager", "Project Manager", "Resource Manager"];
@@ -1497,13 +1514,17 @@
       var c = el("div");
       c.innerHTML =
         "<label class='field-label inline'>Display name</label><input class='input' id='ncName' placeholder='e.g., Jordan Lee'>" +
-        "<label class='field-label inline mt'>Role</label><select class='select' id='ncRole' style='width:100%'>" + ROLES.map(function (r) { return "<option" + (r === "Department Manager" ? " selected" : "") + ">" + esc(r) + "</option>"; }).join("") + "</select>" +
+        "<label class='field-label inline mt'>Role</label><select class='select' id='ncRole' style='width:100%'>" + STANDARD_USER_ROLES.map(function (r) { return "<option" + (r === "Department Manager" ? " selected" : "") + ">" + esc(r) + "</option>"; }).join("") + "</select>" +
         "<label class='field-label inline mt'>Passphrase (optional)</label><input class='input' id='ncPass' type='password' placeholder='Leave blank for quick local access'>";
       var create = el("button", { class: "btn primary mt", style: "width:100%" }, "Create & sign in");
       create.addEventListener("click", function () {
         var name = $("#ncName").value.trim();
         if (!name) { toast("Name is required", "err"); return; }
-        createUser(name, $("#ncPass").value, $("#ncRole").value).then(function (u) { enterApp(u.id); });
+        var chosenRole = $("#ncRole").value;
+        if (chosenRole === "Master Admin" || chosenRole === "Admin" || STANDARD_USER_ROLES.indexOf(chosenRole) === -1) {
+          chosenRole = "Department Manager";
+        }
+        createUser(name, $("#ncPass").value, chosenRole).then(function (u) { enterApp(u.id); });
       });
       c.appendChild(create);
       if (accounts.users.length) {
@@ -1574,13 +1595,16 @@
   }
 
   function adminCreateLocalUserPrompt() {
+    var cur = currentUser();
+    var isMaster = cur && cur.role === "Master Admin";
+    var assignable = isMaster ? ROLES : DELEGATED_ADMIN_ROLES;
     var body = el("div");
     body.innerHTML =
       "<div class='form-grid'>" +
       "<div class='form-row full'><label class='field-label inline'>Display name *</label>" +
       "<input class='input' id='nluName' placeholder='e.g., Sarah Chen'></div>" +
       "<div class='form-row'><label class='field-label inline'>Role</label>" +
-      "<select class='select' id='nluRole'>" + ROLES.map(function (r) {
+      "<select class='select' id='nluRole'>" + assignable.map(function (r) {
         return "<option" + (r === "Project Manager" ? " selected" : "") + ">" + esc(r) + "</option>";
       }).join("") + "</select></div>" +
       "<div class='form-row'><label class='field-label inline'>Passphrase (optional)</label>" +
@@ -1600,6 +1624,10 @@
           var pass = $("#nluPass").value;
           var wsType = $("#nluWorkspace").value;
           if (!name) { toast("Display name is required", "err"); return; }
+          if (r === "Master Admin" && !isMaster) {
+            toast("Only a Master Admin can create a Master Admin profile", "err");
+            return;
+          }
           createUser(name, pass, r).then(function (newUser) {
             if (wsType === "demo") {
               try {
@@ -1616,13 +1644,20 @@
   }
 
   function adminEditLocalUserModal(u) {
+    var cur = currentUser();
+    var isMaster = cur && cur.role === "Master Admin";
+    if (u.role === "Master Admin" && !isMaster) {
+      toast("Only a Master Admin can modify Master Admin accounts", "err");
+      return;
+    }
+    var assignable = isMaster ? ROLES : DELEGATED_ADMIN_ROLES;
     var body = el("div");
     body.innerHTML =
       "<div class='form-grid'>" +
       "<div class='form-row full'><label class='field-label inline'>Display name *</label>" +
       "<input class='input' id='eluName' value='" + esc(u.displayName) + "'></div>" +
       "<div class='form-row full'><label class='field-label inline'>Assigned role</label>" +
-      "<select class='select' id='eluRole'>" + ROLES.map(function (r) {
+      "<select class='select' id='eluRole'>" + assignable.map(function (r) {
         return "<option" + (r === u.role ? " selected" : "") + ">" + esc(r) + "</option>";
       }).join("") + "</select></div>" +
       "<div class='form-row full'><label class='field-label inline'>Passphrase action</label>" +
@@ -1648,6 +1683,10 @@
           var newRole = $("#eluRole").value;
           var passAct = $("#eluPassAction").value;
           if (!newName) { toast("Display name is required", "err"); return; }
+          if (newRole === "Master Admin" && !isMaster) {
+            toast("Only a Master Admin can assign Master Admin role", "err");
+            return;
+          }
           var prevRole = u.role;
           u.displayName = newName;
           u.role = newRole;
@@ -5315,7 +5354,9 @@
     }).join("");
 
     var rs = $("#roleSelect");
-    rs.innerHTML = ROLES.map(function (r) {
+    var activeIsMaster = serverSession.active ? isServerMasterAdmin() : (role() === "Master Admin" || (currentUser() && currentUser().role === "Master Admin"));
+    var assignable = activeIsMaster ? ROLES : DELEGATED_ADMIN_ROLES;
+    rs.innerHTML = assignable.map(function (r) {
       return '<option value="' + esc(r) + '"' + (r === role() ? " selected" : "") + ">" + esc(r) + "</option>";
     }).join("");
     rs.disabled = !canChangeSimulatedRole();
@@ -9935,28 +9976,40 @@
         "<div class='faint'>ID: " + esc(u.id) + "</div></div></div>"));
 
       var roleCell = el("td");
-      var roleSel = el("select", { class: "select select-sm" });
-      roleSel.innerHTML = ROLES.map(function (r) {
-        return "<option" + (r === u.role ? " selected" : "") + ">" + esc(r) + "</option>";
-      }).join("");
-      roleSel.addEventListener("change", function () {
-        var nextRole = this.value;
-        var prevRole = u.role;
-        confirmModal("Change role of “" + u.displayName + "” to " + nextRole + "?",
-          "This will grant them the permissions of " + nextRole + " across all boards and registers.",
-          function () {
-            u.role = nextRole;
-            if (isSelf) state.settings.role = nextRole;
-            saveAccounts();
-            recordAudit("User", u.id, "Role changed", u.displayName + ": " + prevRole + " ➔ " + nextRole);
-            toast("Role updated to " + nextRole, "ok");
-            render();
-          },
-          function () {
-            roleSel.value = prevRole;
-          });
-      });
-      roleCell.appendChild(roleSel);
+      var cur = currentUser();
+      var isMaster = cur && cur.role === "Master Admin";
+      if (u.role === "Master Admin" && !isMaster) {
+        roleCell.innerHTML = "<span class='chip sm ok' style='font-weight:700'>★ Master Admin</span>";
+      } else {
+        var roleSel = el("select", { class: "select select-sm" });
+        var assignable = isMaster ? ROLES : DELEGATED_ADMIN_ROLES;
+        roleSel.innerHTML = assignable.map(function (r) {
+          return "<option" + (r === u.role ? " selected" : "") + ">" + esc(r) + "</option>";
+        }).join("");
+        roleSel.addEventListener("change", function () {
+          var nextRole = this.value;
+          var prevRole = u.role;
+          if (nextRole === "Master Admin" && !isMaster) {
+            toast("Only a Master Admin can grant Master Admin role", "err");
+            this.value = prevRole;
+            return;
+          }
+          confirmModal("Change role of “" + u.displayName + "” to " + nextRole + "?",
+            "This will grant them the permissions of " + nextRole + " across all boards and registers.",
+            function () {
+              u.role = nextRole;
+              if (isSelf) state.settings.role = nextRole;
+              saveAccounts();
+              recordAudit("User", u.id, "Role changed", u.displayName + ": " + prevRole + " ➔ " + nextRole);
+              toast("Role updated to " + nextRole, "ok");
+              render();
+            },
+            function () {
+              roleSel.value = prevRole;
+            });
+        });
+        roleCell.appendChild(roleSel);
+      }
       tr.appendChild(roleCell);
 
       tr.appendChild(el("td", null, u.hasPass
@@ -9967,9 +10020,11 @@
         u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "Initial"));
 
       var actTd = el("td", { class: "right" });
-      var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
-      editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
-      actTd.appendChild(editBtn);
+      if (u.role !== "Master Admin" || isMaster) {
+        var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
+        editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
+        actTd.appendChild(editBtn);
+      }
 
       if (!isSelf) {
         var switchBtn = el("button", { class: "btn sm ghost", style: "margin-right:6px" }, "Switch ➔");
@@ -9982,9 +10037,13 @@
         });
         actTd.appendChild(switchBtn);
 
-        var delBtn = el("button", { class: "btn sm danger" }, "Delete");
-        delBtn.addEventListener("click", function () { adminDeleteLocalUser(u); });
-        actTd.appendChild(delBtn);
+        if (u.role !== "Master Admin") {
+          var delBtn = el("button", { class: "btn sm danger" }, "Delete");
+          delBtn.addEventListener("click", function () { deleteUser(u); });
+          actTd.appendChild(delBtn);
+        } else {
+          actTd.appendChild(el("span", { class: "chip sm faint", title: "Master Admin accounts cannot be deleted." }, "Protected"));
+        }
       }
       tr.appendChild(actTd);
       tb.appendChild(tr);
@@ -10246,10 +10305,10 @@
       } else {
         var ownerUser = adminState.users.filter(function (u) { return u.email === w.owner_email || u.id === w.owner_id; })[0];
         var isOwnerMaster = ownerUser && ownerUser.global_role === "Master Admin";
-        act.appendChild(mkBtn("Open workspace", "btn sm ghost", function () { adminOpenWorkspace(w); }));
         if (isOwnerMaster && !isServerMasterAdmin()) {
-          act.appendChild(el("span", { class: "chip sm faint", title: "Master Admin workspace is protected." }, "protected"));
+          act.appendChild(el("span", { class: "chip sm faint", title: "Master Admin workspace is protected." }, "★ Protected"));
         } else {
+          act.appendChild(mkBtn("Open workspace", "btn sm ghost", function () { adminOpenWorkspace(w); }));
           act.appendChild(mkBtn("Reset to setup", "btn sm danger", function () { adminResetWorkspace(w); }));
         }
       }
@@ -10936,48 +10995,73 @@
 
     // Account & access
     var acctPanel = el("div", { class: "panel panel-pad mt" });
-    var cu = currentUser();
-    acctPanel.appendChild(el("h2", null, "Account & access"));
-    acctPanel.appendChild(el("p", { class: "muted" },
-      "Signed in as " + (cu ? cu.displayName + " (" + cu.role + ")" : "guest") + ". Each profile keeps its own boards and workspace data in this browser."));
-    var acctRow = el("div", { class: "flex wrap mt", style: "gap:8px" });
-    acctRow.appendChild(mkBtn("🔌 Sign out", "btn", function () { logout(); }));
-    acctRow.appendChild(mkBtn("👤 Switch / add profile", "btn", function () { renderAuthGate(cu && cu.id); }));
-    if (canAdministerUsers()) {
-      acctRow.appendChild(mkBtn("+ Add user profile", "btn primary", adminCreateLocalUserPrompt));
-      acctRow.appendChild(mkBtn("⚙ Accounts & users", "btn", function () { go("admin"); }));
+    if (serverSession && serverSession.active) {
+      acctPanel.appendChild(el("h2", null, "Cloud Account & Access"));
+      acctPanel.appendChild(el("p", { class: "muted" },
+        "Signed in via Cloudflare Access as <strong>" + esc(serverSession.email) + "</strong> (" + esc(serverSession.role) + "). " +
+        "Identity is authenticated through Cloudflare one-time PIN and enforced server-side."));
+      var acctRow = el("div", { class: "flex wrap mt", style: "gap:8px" });
+      acctRow.appendChild(mkBtn("🔌 Sign out", "btn", function () { logout(); }));
+      if (canAdministerUsers()) {
+        acctRow.appendChild(mkBtn("⚙ Manage Cloud Accounts", "btn primary", function () { go("admin"); }));
+      }
+      acctPanel.appendChild(acctRow);
+      acctPanel.appendChild(el("div", { class: "chip sm ok mt", style: "display:inline-block" },
+        "🔒 Enterprise Cloud Session Active · Roles & access enforced server-side"));
+      root.appendChild(acctPanel);
+    } else {
+      var cu = currentUser();
+      acctPanel.appendChild(el("h2", null, "Local Profile & Access"));
+      acctPanel.appendChild(el("p", { class: "muted" },
+        "Signed in as " + (cu ? cu.displayName + " (" + cu.role + ")" : "guest") + ". Each profile keeps its own boards and workspace data in this browser."));
+      var acctRow = el("div", { class: "flex wrap mt", style: "gap:8px" });
+      acctRow.appendChild(mkBtn("🔌 Sign out", "btn", function () { logout(); }));
+      acctRow.appendChild(mkBtn("👤 Switch / add profile", "btn", function () { renderAuthGate(cu && cu.id); }));
+      if (canAdministerUsers()) {
+        acctRow.appendChild(mkBtn("+ Add user profile", "btn primary", adminCreateLocalUserPrompt));
+        acctRow.appendChild(mkBtn("⚙ Accounts & users", "btn", function () { go("admin"); }));
+      }
+      if (cu) acctRow.appendChild(mkBtn(cu.hasPass ? "🔑 Change passphrase" : "🔑 Set passphrase", "btn", function () { changePassphrase(cu); }));
+      acctPanel.appendChild(acctRow);
+      // User roster (local mode only)
+      if (accounts.users.length > 0) {
+        var ut = el("table", { class: "table mt" });
+        ut.innerHTML = "<thead><tr><th>Profile</th><th>Role</th><th>Secured</th><th class='right'>Actions</th></tr></thead>";
+        var utb = el("tbody");
+        var activeIsMaster = cu && cu.role === "Master Admin";
+        accounts.users.forEach(function (u) {
+          var tr = el("tr");
+          tr.innerHTML = "<td><strong>" + esc(u.displayName) + "</strong>" + (u.id === accounts.currentUserId ? " <span class='badge ok'>you</span>" : "") + "</td><td><span class='chip role-" + (u.role || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "'>" + esc(u.role) + "</span></td><td>" + (u.hasPass ? "🔒 passphrase" : "—") + "</td><td class='right' style='white-space:nowrap'></td>";
+          var actTd = tr.querySelector("td.right");
+          if (canAdministerUsers()) {
+            if (u.role !== "Master Admin" || activeIsMaster) {
+              var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
+              editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
+              actTd.appendChild(editBtn);
+            }
+          }
+          if (u.id !== accounts.currentUserId) {
+            var swBtn = el("button", { class: "btn sm ghost", style: "margin-right:6px" }, "Switch ➔");
+            swBtn.addEventListener("click", function () { switchUser(u.id); });
+            actTd.appendChild(swBtn);
+            if (u.role !== "Master Admin") {
+              if (canAdministerUsers()) {
+                var del = el("button", { class: "btn sm danger" }, "Delete");
+                del.addEventListener("click", function () { deleteUser(u); });
+                actTd.appendChild(del);
+              }
+            } else {
+              actTd.appendChild(el("span", { class: "chip sm faint", title: "Master Admin accounts cannot be deleted." }, "Protected"));
+            }
+          }
+          utb.appendChild(tr);
+        });
+        ut.appendChild(utb); acctPanel.appendChild(ut);
+      }
+      acctPanel.appendChild(el("div", { class: "warn-banner mt" },
+        "Local profiles are a convenience gate, not enterprise security. Enterprise cloud accounts are managed through Cloudflare Zero Trust."));
+      root.appendChild(acctPanel);
     }
-    if (cu) acctRow.appendChild(mkBtn(cu.hasPass ? "🔑 Change passphrase" : "🔑 Set passphrase", "btn", function () { changePassphrase(cu); }));
-    acctPanel.appendChild(acctRow);
-    // User roster
-    if (accounts.users.length > 0) {
-      var ut = el("table", { class: "table mt" });
-      ut.innerHTML = "<thead><tr><th>Profile</th><th>Role</th><th>Secured</th><th class='right'>Actions</th></tr></thead>";
-      var utb = el("tbody");
-      accounts.users.forEach(function (u) {
-        var tr = el("tr");
-        tr.innerHTML = "<td><strong>" + esc(u.displayName) + "</strong>" + (u.id === accounts.currentUserId ? " <span class='badge ok'>you</span>" : "") + "</td><td><span class='chip role-" + (u.role || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "'>" + esc(u.role) + "</span></td><td>" + (u.hasPass ? "🔒 passphrase" : "—") + "</td><td class='right' style='white-space:nowrap'></td>";
-        var actTd = tr.querySelector("td.right");
-        if (canAdministerUsers()) {
-          var editBtn = el("button", { class: "btn sm", style: "margin-right:6px" }, "⚙ Edit");
-          editBtn.addEventListener("click", function () { adminEditLocalUserModal(u); });
-          actTd.appendChild(editBtn);
-        }
-        if (u.id !== accounts.currentUserId) {
-          var swBtn = el("button", { class: "btn sm ghost", style: "margin-right:6px" }, "Switch ➔");
-          swBtn.addEventListener("click", function () { switchUser(u.id); });
-          actTd.appendChild(swBtn);
-          var del = el("button", { class: "btn sm danger" }, "Delete");
-          del.addEventListener("click", function () { deleteUser(u); });
-          actTd.appendChild(del);
-        }
-        utb.appendChild(tr);
-      });
-      ut.appendChild(utb); acctPanel.appendChild(ut);
-    }
-    acctPanel.appendChild(el("div", { class: "warn-banner mt" },
-      "Local profiles are a convenience gate, not enterprise security. Enterprise SSO (OIDC/SAML) requires a backend and is tracked in the improvement backlog."));
-    root.appendChild(acctPanel);
 
     // Import & Plan a Board from a file
     var planPanel = el("div", { class: "panel panel-pad mt" });
@@ -13029,7 +13113,14 @@
         toast("Permission denied: Only an administrator can switch simulated roles. Contact your workspace admin.", "err");
         return;
       }
-      mutate(function () { state.settings.role = $("#roleSelect").value; });
+      var nextRole = $("#roleSelect").value;
+      var activeIsMaster = serverSession.active ? isServerMasterAdmin() : (role() === "Master Admin" || (currentUser() && currentUser().role === "Master Admin"));
+      if (nextRole === "Master Admin" && !activeIsMaster) {
+        $("#roleSelect").value = role();
+        toast("Only a Master Admin can simulate the Master Admin role.", "err");
+        return;
+      }
+      mutate(function () { state.settings.role = nextRole; });
     });
     $("#themeBtn").addEventListener("click", function () { mutate(function () { state.settings.theme = state.settings.theme === "dark" ? "light" : "dark"; }); });
     $("#newCardBtn").addEventListener("click", function () { go("board"); openCardEditor(null); });
@@ -13072,7 +13163,7 @@
     bindGlobal();
 
     // First launch: migrate any legacy single-user workspace into a default profile
-    if (!accounts.users.length) {
+    if (!accounts.users.length && !/^\/app\/?$/.test(location.pathname)) {
       var legacy = localStorage.getItem(STORAGE_KEY);
       var u = { id: uid("u"), displayName: "Local Admin", role: "Admin", hasPass: false, salt: randSalt(), hash: null, createdAt: Date.now() };
       accounts.users.push(u); accounts.currentUserId = u.id; saveAccounts();
