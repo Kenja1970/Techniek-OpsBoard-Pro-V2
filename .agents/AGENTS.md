@@ -9,6 +9,7 @@
 | Field | Value |
 |---|---|
 | Project name | `Techniek OpsBoard Pro V2` |
+| Repository | `https://github.com/Kenja1970/Techniek-OpsBoard-Pro-V2` |
 | What it does, in one sentence | Local-first enterprise project controls and engineering management system combining PMBOK Earned Value Management (EVM), Lean Kanban flow, multi-type resource capacity forecasting, and grounded procedural AI. |
 | Primary users | Project Managers, Department Managers, and Engineering Leads delivering multidisciplinary engineering and construction contracts. |
 | Language / runtime | Modern JavaScript (ES2022+), CSS3 with design tokens, HTML5; Cloudflare Workers (Node.js/V8 edge). |
